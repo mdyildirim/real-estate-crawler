@@ -95,6 +95,27 @@ async function upsertRun(DB, summary, runTag) {
   };
 }
 
+function normalizeError(error) {
+  if (!error) {
+    return "Unknown error";
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return error.message || String(error);
+}
+
+async function runInBatches(DB, statements, size = 80) {
+  if (!Array.isArray(statements) || statements.length === 0) {
+    return;
+  }
+  const chunkSize = Math.max(1, Math.min(200, size));
+  for (let i = 0; i < statements.length; i += chunkSize) {
+    const chunk = statements.slice(i, i + chunkSize);
+    await DB.batch(chunk);
+  }
+}
+
 export async function onRequestPost(context) {
   const DB = context.env?.DB;
   if (!DB) {
@@ -127,27 +148,27 @@ export async function onRequestPost(context) {
   );
   const uniqueListings = Array.isArray(payload.listings) ? payload.listings.map(normalizeListing) : [];
 
-  const runInfo = await upsertRun(DB, summary, runTag);
-  if (!runInfo.runId) {
-    return json({ ok: false, error: "Failed to persist run metadata." }, 500);
-  }
+  try {
+    const runInfo = await upsertRun(DB, summary, runTag);
+    if (!runInfo.runId) {
+      return json({ ok: false, error: "Failed to persist run metadata." }, 500);
+    }
 
-  for (const row of sourceSummaries) {
-    await DB.prepare(
-      `
-        INSERT INTO source_runs (
-          run_id, source, status, blocked, observed_total, crawled_listings, url, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(run_id, source) DO UPDATE SET
-          status = excluded.status,
-          blocked = excluded.blocked,
-          observed_total = excluded.observed_total,
-          crawled_listings = excluded.crawled_listings,
-          url = excluded.url,
-          notes = excluded.notes
-      `
-    )
-      .bind(
+    const sourceRunStatements = sourceSummaries.map((row) =>
+      DB.prepare(
+        `
+          INSERT INTO source_runs (
+            run_id, source, status, blocked, observed_total, crawled_listings, url, notes
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(run_id, source) DO UPDATE SET
+            status = excluded.status,
+            blocked = excluded.blocked,
+            observed_total = excluded.observed_total,
+            crawled_listings = excluded.crawled_listings,
+            url = excluded.url,
+            notes = excluded.notes
+        `
+      ).bind(
         runInfo.runId,
         row.source,
         row.status,
@@ -157,40 +178,39 @@ export async function onRequestPost(context) {
         row.url,
         resultsBySource.get(row.source) || ""
       )
-      .run();
-  }
+    );
+    await runInBatches(DB, sourceRunStatements, 40);
 
-  for (const listing of uniqueListings) {
-    await DB.prepare(
-      `
-        INSERT INTO listings_current (
-          source, listing_key, listing_id, url, title, address,
-          neighborhood, room_count, building_age, floor_info, price_tl, gross_sqm, net_sqm,
-          avg_price_for_sale, endeksa_min_price, endeksa_max_price,
-          area_city, area_district, first_seen_at, last_seen_at, last_seen_run_id, last_crawled_at, is_active
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-        ON CONFLICT(source, listing_key) DO UPDATE SET
-          listing_id = excluded.listing_id,
-          url = excluded.url,
-          title = excluded.title,
-          address = excluded.address,
-          neighborhood = excluded.neighborhood,
-          room_count = excluded.room_count,
-          building_age = excluded.building_age,
-          floor_info = excluded.floor_info,
-          price_tl = excluded.price_tl,
-          gross_sqm = excluded.gross_sqm,
-          net_sqm = excluded.net_sqm,
-          avg_price_for_sale = excluded.avg_price_for_sale,
-          endeksa_min_price = excluded.endeksa_min_price,
-          endeksa_max_price = excluded.endeksa_max_price,
-          last_seen_at = excluded.last_seen_at,
-          last_seen_run_id = excluded.last_seen_run_id,
-          last_crawled_at = excluded.last_crawled_at,
-          is_active = 1
-      `
-    )
-      .bind(
+    const upsertCurrentStatements = uniqueListings.map((listing) =>
+      DB.prepare(
+        `
+          INSERT INTO listings_current (
+            source, listing_key, listing_id, url, title, address,
+            neighborhood, room_count, building_age, floor_info, price_tl, gross_sqm, net_sqm,
+            avg_price_for_sale, endeksa_min_price, endeksa_max_price,
+            area_city, area_district, first_seen_at, last_seen_at, last_seen_run_id, last_crawled_at, is_active
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+          ON CONFLICT(source, listing_key) DO UPDATE SET
+            listing_id = excluded.listing_id,
+            url = excluded.url,
+            title = excluded.title,
+            address = excluded.address,
+            neighborhood = excluded.neighborhood,
+            room_count = excluded.room_count,
+            building_age = excluded.building_age,
+            floor_info = excluded.floor_info,
+            price_tl = excluded.price_tl,
+            gross_sqm = excluded.gross_sqm,
+            net_sqm = excluded.net_sqm,
+            avg_price_for_sale = excluded.avg_price_for_sale,
+            endeksa_min_price = excluded.endeksa_min_price,
+            endeksa_max_price = excluded.endeksa_max_price,
+            last_seen_at = excluded.last_seen_at,
+            last_seen_run_id = excluded.last_seen_run_id,
+            last_crawled_at = excluded.last_crawled_at,
+            is_active = 1
+        `
+      ).bind(
         listing.source,
         listing.listingKey,
         listing.listingId,
@@ -214,34 +234,35 @@ export async function onRequestPost(context) {
         runInfo.runId,
         listing.crawledAt
       )
-      .run();
+    );
+    await runInBatches(DB, upsertCurrentStatements, 80);
 
-    await DB.prepare(
-      `
-        INSERT INTO listing_snapshots (
-          run_id, source, listing_key, listing_id, url, title, address,
-          neighborhood, room_count, building_age, floor_info, price_tl, gross_sqm, net_sqm,
-          avg_price_for_sale, endeksa_min_price, endeksa_max_price, crawled_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(run_id, source, listing_key) DO UPDATE SET
-          listing_id = excluded.listing_id,
-          url = excluded.url,
-          title = excluded.title,
-          address = excluded.address,
-          neighborhood = excluded.neighborhood,
-          room_count = excluded.room_count,
-          building_age = excluded.building_age,
-          floor_info = excluded.floor_info,
-          price_tl = excluded.price_tl,
-          gross_sqm = excluded.gross_sqm,
-          net_sqm = excluded.net_sqm,
-          avg_price_for_sale = excluded.avg_price_for_sale,
-          endeksa_min_price = excluded.endeksa_min_price,
-          endeksa_max_price = excluded.endeksa_max_price,
-          crawled_at = excluded.crawled_at
-      `
-    )
-      .bind(
+    const snapshotStatements = uniqueListings.map((listing) =>
+      DB.prepare(
+        `
+          INSERT INTO listing_snapshots (
+            run_id, source, listing_key, listing_id, url, title, address,
+            neighborhood, room_count, building_age, floor_info, price_tl, gross_sqm, net_sqm,
+            avg_price_for_sale, endeksa_min_price, endeksa_max_price, crawled_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(run_id, source, listing_key) DO UPDATE SET
+            listing_id = excluded.listing_id,
+            url = excluded.url,
+            title = excluded.title,
+            address = excluded.address,
+            neighborhood = excluded.neighborhood,
+            room_count = excluded.room_count,
+            building_age = excluded.building_age,
+            floor_info = excluded.floor_info,
+            price_tl = excluded.price_tl,
+            gross_sqm = excluded.gross_sqm,
+            net_sqm = excluded.net_sqm,
+            avg_price_for_sale = excluded.avg_price_for_sale,
+            endeksa_min_price = excluded.endeksa_min_price,
+            endeksa_max_price = excluded.endeksa_max_price,
+            crawled_at = excluded.crawled_at
+        `
+      ).bind(
         runInfo.runId,
         listing.source,
         listing.listingKey,
@@ -261,32 +282,41 @@ export async function onRequestPost(context) {
         listing.endeksaMaxPrice,
         listing.crawledAt
       )
-      .run();
-  }
+    );
+    await runInBatches(DB, snapshotStatements, 80);
 
-  const successfulSources = sourceSummaries.filter((r) => r.status === "ok").map((r) => r.source);
-  for (const source of successfulSources) {
-    await DB.prepare(
-      `
-        UPDATE listings_current
-        SET is_active = 0
-        WHERE area_city = ?
-          AND area_district = ?
-          AND source = ?
-          AND last_seen_run_id <> ?
-      `
-    )
-      .bind(runInfo.areaCity, runInfo.areaDistrict, source, runInfo.runId)
-      .run();
-  }
+    const successfulSources = sourceSummaries.filter((r) => r.status === "ok").map((r) => r.source);
+    const staleStatements = successfulSources.map((source) =>
+      DB.prepare(
+        `
+          UPDATE listings_current
+          SET is_active = 0
+          WHERE area_city = ?
+            AND area_district = ?
+            AND source = ?
+            AND last_seen_run_id <> ?
+        `
+      ).bind(runInfo.areaCity, runInfo.areaDistrict, source, runInfo.runId)
+    );
+    await runInBatches(DB, staleStatements, 40);
 
-  return json({
-    ok: true,
-    runTag,
-    runId: runInfo.runId,
-    receivedSourceSummaries: sourceSummaries.length,
-    receivedListings: uniqueListings.length
-  });
+    return json({
+      ok: true,
+      runTag,
+      runId: runInfo.runId,
+      receivedSourceSummaries: sourceSummaries.length,
+      receivedListings: uniqueListings.length
+    });
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        error: "Ingest failed.",
+        details: normalizeError(error)
+      },
+      500
+    );
+  }
 }
 
 export async function onRequestGet(context) {
