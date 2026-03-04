@@ -63,6 +63,7 @@ Schema:
 - `db/schema.sql`
 - `db/migrations/0001_init.sql`
 - `db/migrations/0002_listing_features.sql`
+- `db/migrations/0003_system_logs.sql`
 
 ## Output Files
 
@@ -113,10 +114,10 @@ UI features:
 
 - select any city in Turkiye
 - select district in that city
-- pick source set
-- dispatch crawl workflow via `/api/crawl-request`
-- list recent runs from D1 via `/api/runs?city=...&district=...`
-- view ranked undervalued listings via `/api/deals` with adjustable filters
+- start scan with one button
+- auto-refresh results from D1
+- view top undervalued listings
+- optional technical log panel for troubleshooting
 
 City/district options come from `public/tr-locations.json` (81 cities / 973 districts).
 
@@ -126,8 +127,23 @@ City/district options come from `public/tr-locations.json` (81 cities / 973 dist
 - `GET /api/runs?city=Istanbul&district=Atasehir&limit=20`
 - `GET /api/listings?city=Istanbul&district=Atasehir&active=1&limit=50`
 - `GET /api/deals?city=Istanbul&district=Atasehir&limit=25&min_discount=0.12&min_confidence=0.35&min_comps=6`
+- `GET /api/logs?city=Istanbul&district=Atasehir&limit=50`
 - `POST /api/ingest`
 - `POST /api/crawl-request`
+
+## Cloudflare Logs (Worker Runtime)
+
+Tail production function logs from terminal:
+
+```bash
+HOME=$PWD npx wrangler pages deployment tail --project-name real-estate-crawler --environment production --format pretty
+```
+
+Tail with JSON output:
+
+```bash
+HOME=$PWD npx wrangler pages deployment tail --project-name real-estate-crawler --environment production --format json
+```
 
 ## GitHub Actions Workflow (`.github/workflows/crawl.yml`)
 

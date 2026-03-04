@@ -68,6 +68,8 @@ function persistRunToSqlite({ dbPath, runTag, payload }) {
       avg_price_for_sale = excluded.avg_price_for_sale,
       endeksa_min_price = excluded.endeksa_min_price,
       endeksa_max_price = excluded.endeksa_max_price,
+      area_city = excluded.area_city,
+      area_district = excluded.area_district,
       last_seen_at = excluded.last_seen_at,
       last_seen_run_id = excluded.last_seen_run_id,
       last_crawled_at = excluded.last_crawled_at,

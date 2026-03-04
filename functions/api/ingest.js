@@ -51,6 +51,41 @@ function toNullableNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function canonicalAreaName(value, fallback) {
+  const raw = String(value || fallback || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!raw) {
+    return String(fallback || "");
+  }
+  const ascii = raw
+    .toLocaleLowerCase("tr-TR")
+    .replace(/ç/g, "c")
+    .replace(/ğ/g, "g")
+    .replace(/ı/g, "i")
+    .replace(/ö/g, "o")
+    .replace(/ş/g, "s")
+    .replace(/ü/g, "u")
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!ascii) {
+    return String(fallback || "");
+  }
+  return ascii
+    .split(" ")
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : ""))
+    .join(" ");
+}
+
+function safeJson(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return JSON.stringify({ note: "metadata serialization failed" });
+  }
+}
+
 async function parseJsonBody(request) {
   try {
     return await request.json();
@@ -59,11 +94,42 @@ async function parseJsonBody(request) {
   }
 }
 
+async function writeSystemLog(DB, entry) {
+  if (!DB) {
+    return;
+  }
+  const level = String(entry?.level || "info");
+  const eventType = String(entry?.eventType || "system");
+  const runTag = entry?.runTag ? String(entry.runTag) : null;
+  const runId = entry?.runId == null ? null : Number(entry.runId);
+  const areaCity = entry?.areaCity ? String(entry.areaCity) : null;
+  const areaDistrict = entry?.areaDistrict ? String(entry.areaDistrict) : null;
+  const source = entry?.source ? String(entry.source) : null;
+  const message = String(entry?.message || "");
+  const metadataJson = entry?.metadata == null ? null : safeJson(entry.metadata);
+
+  console.log(`[${level}] ${eventType}: ${message}`, entry?.metadata || {});
+
+  try {
+    await DB.prepare(
+      `
+        INSERT INTO system_logs (
+          level, event_type, run_tag, run_id, area_city, area_district, source, message, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+    )
+      .bind(level, eventType, runTag, runId, areaCity, areaDistrict, source, message, metadataJson)
+      .run();
+  } catch (error) {
+    console.log("Failed to write system log row:", normalizeError(error));
+  }
+}
+
 async function upsertRun(DB, summary, runTag) {
   const startedAt = summary?.startedAt || new Date().toISOString();
   const finishedAt = summary?.finishedAt || startedAt;
-  const areaCity = summary?.area?.city || "Istanbul";
-  const areaDistrict = summary?.area?.district || "Atasehir";
+  const areaCity = canonicalAreaName(summary?.area?.city, "Istanbul");
+  const areaDistrict = canonicalAreaName(summary?.area?.district, "Atasehir");
   const rawCount = Number(summary?.totals?.crawledRaw || 0);
   const uniqueCount = Number(summary?.totals?.crawledUnique || 0);
 
@@ -137,6 +203,8 @@ export async function onRequestPost(context) {
 
   const summary = payload.summary || {};
   const runTag = summary.runTag || `manual-${Date.now()}`;
+  const requestedAreaCity = canonicalAreaName(summary?.area?.city, "Istanbul");
+  const requestedAreaDistrict = canonicalAreaName(summary?.area?.district, "Atasehir");
   const sourceSummaries = Array.isArray(summary.sourceSummaries)
     ? summary.sourceSummaries.map(normalizeSourceSummary)
     : [];
@@ -148,11 +216,34 @@ export async function onRequestPost(context) {
   );
   const uniqueListings = Array.isArray(payload.listings) ? payload.listings.map(normalizeListing) : [];
 
+  await writeSystemLog(DB, {
+    level: "info",
+    eventType: "ingest.received",
+    runTag,
+    areaCity: requestedAreaCity,
+    areaDistrict: requestedAreaDistrict,
+    message: "Ingest payload received.",
+    metadata: {
+      sourceSummaries: sourceSummaries.length,
+      listings: uniqueListings.length
+    }
+  });
+
   try {
     const runInfo = await upsertRun(DB, summary, runTag);
     if (!runInfo.runId) {
       return json({ ok: false, error: "Failed to persist run metadata." }, 500);
     }
+
+    await writeSystemLog(DB, {
+      level: "info",
+      eventType: "ingest.run_persisted",
+      runTag,
+      runId: runInfo.runId,
+      areaCity: runInfo.areaCity,
+      areaDistrict: runInfo.areaDistrict,
+      message: "Run metadata persisted."
+    });
 
     const sourceRunStatements = sourceSummaries.map((row) =>
       DB.prepare(
@@ -181,6 +272,17 @@ export async function onRequestPost(context) {
     );
     await runInBatches(DB, sourceRunStatements, 40);
 
+    await writeSystemLog(DB, {
+      level: "info",
+      eventType: "ingest.source_runs_written",
+      runTag,
+      runId: runInfo.runId,
+      areaCity: runInfo.areaCity,
+      areaDistrict: runInfo.areaDistrict,
+      message: "Source run summaries written.",
+      metadata: { count: sourceSummaries.length }
+    });
+
     const upsertCurrentStatements = uniqueListings.map((listing) =>
       DB.prepare(
         `
@@ -205,6 +307,8 @@ export async function onRequestPost(context) {
             avg_price_for_sale = excluded.avg_price_for_sale,
             endeksa_min_price = excluded.endeksa_min_price,
             endeksa_max_price = excluded.endeksa_max_price,
+            area_city = excluded.area_city,
+            area_district = excluded.area_district,
             last_seen_at = excluded.last_seen_at,
             last_seen_run_id = excluded.last_seen_run_id,
             last_crawled_at = excluded.last_crawled_at,
@@ -236,6 +340,17 @@ export async function onRequestPost(context) {
       )
     );
     await runInBatches(DB, upsertCurrentStatements, 80);
+
+    await writeSystemLog(DB, {
+      level: "info",
+      eventType: "ingest.listings_current_written",
+      runTag,
+      runId: runInfo.runId,
+      areaCity: runInfo.areaCity,
+      areaDistrict: runInfo.areaDistrict,
+      message: "Listings current upsert completed.",
+      metadata: { count: uniqueListings.length }
+    });
 
     const snapshotStatements = uniqueListings.map((listing) =>
       DB.prepare(
@@ -285,6 +400,17 @@ export async function onRequestPost(context) {
     );
     await runInBatches(DB, snapshotStatements, 80);
 
+    await writeSystemLog(DB, {
+      level: "info",
+      eventType: "ingest.snapshots_written",
+      runTag,
+      runId: runInfo.runId,
+      areaCity: runInfo.areaCity,
+      areaDistrict: runInfo.areaDistrict,
+      message: "Listing snapshots written.",
+      metadata: { count: uniqueListings.length }
+    });
+
     const successfulSources = sourceSummaries.filter((r) => r.status === "ok").map((r) => r.source);
     const staleStatements = successfulSources.map((source) =>
       DB.prepare(
@@ -300,6 +426,20 @@ export async function onRequestPost(context) {
     );
     await runInBatches(DB, staleStatements, 40);
 
+    await writeSystemLog(DB, {
+      level: "info",
+      eventType: "ingest.completed",
+      runTag,
+      runId: runInfo.runId,
+      areaCity: runInfo.areaCity,
+      areaDistrict: runInfo.areaDistrict,
+      message: "Ingest completed successfully.",
+      metadata: {
+        successfulSources: successfulSources.length,
+        listings: uniqueListings.length
+      }
+    });
+
     return json({
       ok: true,
       runTag,
@@ -308,6 +448,18 @@ export async function onRequestPost(context) {
       receivedListings: uniqueListings.length
     });
   } catch (error) {
+    await writeSystemLog(DB, {
+      level: "error",
+      eventType: "ingest.failed",
+      runTag,
+      areaCity: requestedAreaCity,
+      areaDistrict: requestedAreaDistrict,
+      message: "Ingest failed.",
+      metadata: {
+        error: normalizeError(error)
+      }
+    });
+
     return json(
       {
         ok: false,

@@ -23,6 +23,33 @@ function normalizeBoolFlag(value, fallback = true) {
   return !["0", "false", "no"].includes(String(value).toLowerCase());
 }
 
+function canonicalAreaName(value, fallback) {
+  const raw = String(value || fallback || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!raw) {
+    return String(fallback || "");
+  }
+  const ascii = raw
+    .toLocaleLowerCase("tr-TR")
+    .replace(/ç/g, "c")
+    .replace(/ğ/g, "g")
+    .replace(/ı/g, "i")
+    .replace(/ö/g, "o")
+    .replace(/ş/g, "s")
+    .replace(/ü/g, "u")
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!ascii) {
+    return String(fallback || "");
+  }
+  return ascii
+    .split(" ")
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : ""))
+    .join(" ");
+}
+
 export async function onRequestGet(context) {
   const DB = context.env?.DB;
   if (!DB) {
@@ -34,8 +61,8 @@ export async function onRequestGet(context) {
   const offset = Math.max(0, toInt(url.searchParams.get("offset"), 0));
   const source = (url.searchParams.get("source") || "").trim();
   const activeOnly = normalizeBoolFlag(url.searchParams.get("active"), true);
-  const areaCity = (url.searchParams.get("city") || "Istanbul").trim();
-  const areaDistrict = (url.searchParams.get("district") || "Atasehir").trim();
+  const areaCity = canonicalAreaName(url.searchParams.get("city"), "Istanbul");
+  const areaDistrict = canonicalAreaName(url.searchParams.get("district"), "Atasehir");
 
   const where = ["area_city = ?", "area_district = ?"];
   const binds = [areaCity, areaDistrict];

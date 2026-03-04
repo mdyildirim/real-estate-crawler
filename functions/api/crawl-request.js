@@ -25,6 +25,72 @@ function sanitizeInput(value, fallback, maxLen = 120) {
   return pick(value, fallback).slice(0, maxLen);
 }
 
+function canonicalAreaName(value, fallback) {
+  const raw = String(value || fallback || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!raw) {
+    return String(fallback || "");
+  }
+  const ascii = raw
+    .toLocaleLowerCase("tr-TR")
+    .replace(/ç/g, "c")
+    .replace(/ğ/g, "g")
+    .replace(/ı/g, "i")
+    .replace(/ö/g, "o")
+    .replace(/ş/g, "s")
+    .replace(/ü/g, "u")
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!ascii) {
+    return String(fallback || "");
+  }
+  return ascii
+    .split(" ")
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : ""))
+    .join(" ");
+}
+
+function safeJson(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return JSON.stringify({ note: "metadata serialization failed" });
+  }
+}
+
+async function writeSystemLog(DB, entry) {
+  if (!DB) {
+    return;
+  }
+  const level = String(entry?.level || "info");
+  const eventType = String(entry?.eventType || "system");
+  const message = String(entry?.message || "");
+  const metadataJson = entry?.metadata == null ? null : safeJson(entry.metadata);
+  const runTag = entry?.runTag ? String(entry.runTag) : null;
+  const runId = entry?.runId == null ? null : Number(entry.runId);
+  const areaCity = entry?.areaCity ? String(entry.areaCity) : null;
+  const areaDistrict = entry?.areaDistrict ? String(entry.areaDistrict) : null;
+  const source = entry?.source ? String(entry.source) : null;
+
+  console.log(`[${level}] ${eventType}: ${message}`, entry?.metadata || {});
+
+  try {
+    await DB.prepare(
+      `
+        INSERT INTO system_logs (
+          level, event_type, run_tag, run_id, area_city, area_district, source, message, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+    )
+      .bind(level, eventType, runTag, runId, areaCity, areaDistrict, source, message, metadataJson)
+      .run();
+  } catch (error) {
+    console.log("Failed to write system log row:", String(error?.message || error));
+  }
+}
+
 export async function onRequestPost(context) {
   const body = await parseBody(context.request);
   if (!body) {
@@ -46,6 +112,7 @@ export async function onRequestPost(context) {
   const repo = context.env?.GITHUB_REPO;
   const workflowFile = context.env?.GITHUB_WORKFLOW_FILE || "crawl.yml";
   const ref = context.env?.GITHUB_REF || "main";
+  const DB = context.env?.DB;
 
   const missing = [];
   if (!githubToken) {
@@ -68,9 +135,18 @@ export async function onRequestPost(context) {
     );
   }
 
-  const city = sanitizeInput(body.city, "Istanbul", 80);
-  const district = sanitizeInput(body.district, "Atasehir", 80);
+  const city = canonicalAreaName(sanitizeInput(body.city, "Istanbul", 80), "Istanbul");
+  const district = canonicalAreaName(sanitizeInput(body.district, "Atasehir", 80), "Atasehir");
   const sources = sanitizeInput(body.sources, "all", 240);
+
+  await writeSystemLog(DB, {
+    level: "info",
+    eventType: "dispatch.requested",
+    areaCity: city,
+    areaDistrict: district,
+    message: "Crawl workflow dispatch requested.",
+    metadata: { sources, workflowFile, ref }
+  });
 
   const ghRes = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/actions/workflows/${workflowFile}/dispatches`,
@@ -95,6 +171,17 @@ export async function onRequestPost(context) {
 
   if (!ghRes.ok) {
     const txt = await ghRes.text();
+    await writeSystemLog(DB, {
+      level: "error",
+      eventType: "dispatch.failed",
+      areaCity: city,
+      areaDistrict: district,
+      message: "GitHub workflow dispatch failed.",
+      metadata: {
+        status: ghRes.status,
+        details: txt.slice(0, 1000)
+      }
+    });
     return json(
       {
         ok: false,
@@ -105,6 +192,15 @@ export async function onRequestPost(context) {
       502
     );
   }
+
+  await writeSystemLog(DB, {
+    level: "info",
+    eventType: "dispatch.completed",
+    areaCity: city,
+    areaDistrict: district,
+    message: "GitHub workflow dispatched successfully.",
+    metadata: { sources, workflowFile, ref }
+  });
 
   return json({
     ok: true,

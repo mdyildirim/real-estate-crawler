@@ -28,6 +28,33 @@ function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n));
 }
 
+function canonicalAreaName(value, fallback) {
+  const raw = String(value || fallback || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!raw) {
+    return String(fallback || "");
+  }
+  const ascii = raw
+    .toLocaleLowerCase("tr-TR")
+    .replace(/ç/g, "c")
+    .replace(/ğ/g, "g")
+    .replace(/ı/g, "i")
+    .replace(/ö/g, "o")
+    .replace(/ş/g, "s")
+    .replace(/ü/g, "u")
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!ascii) {
+    return String(fallback || "");
+  }
+  return ascii
+    .split(" ")
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : ""))
+    .join(" ");
+}
+
 function normalizeForMatch(text) {
   return String(text || "")
     .trim()
@@ -210,8 +237,8 @@ export async function onRequestGet(context) {
   }
 
   const url = new URL(context.request.url);
-  const areaCity = (url.searchParams.get("city") || "Istanbul").trim();
-  const areaDistrict = (url.searchParams.get("district") || "Atasehir").trim();
+  const areaCity = canonicalAreaName(url.searchParams.get("city"), "Istanbul");
+  const areaDistrict = canonicalAreaName(url.searchParams.get("district"), "Atasehir");
   const limit = Math.max(1, Math.min(100, toInt(url.searchParams.get("limit"), 25)));
   const minDiscount = clamp(toFloat(url.searchParams.get("min_discount"), 0.12), -0.5, 0.9);
   const minConfidence = clamp(toFloat(url.searchParams.get("min_confidence"), 0.35), 0, 1);

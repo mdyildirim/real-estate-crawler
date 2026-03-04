@@ -20,6 +20,33 @@ function inClausePlaceholders(count) {
   return new Array(count).fill("?").join(", ");
 }
 
+function canonicalAreaName(value, fallback) {
+  const raw = String(value || fallback || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!raw) {
+    return String(fallback || "");
+  }
+  const ascii = raw
+    .toLocaleLowerCase("tr-TR")
+    .replace(/ç/g, "c")
+    .replace(/ğ/g, "g")
+    .replace(/ı/g, "i")
+    .replace(/ö/g, "o")
+    .replace(/ş/g, "s")
+    .replace(/ü/g, "u")
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!ascii) {
+    return String(fallback || "");
+  }
+  return ascii
+    .split(" ")
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : ""))
+    .join(" ");
+}
+
 export async function onRequestGet(context) {
   const DB = context.env?.DB;
   if (!DB) {
@@ -28,8 +55,8 @@ export async function onRequestGet(context) {
 
   const url = new URL(context.request.url);
   const limit = Math.max(1, Math.min(100, toInt(url.searchParams.get("limit"), 20)));
-  const areaCity = (url.searchParams.get("city") || "Istanbul").trim();
-  const areaDistrict = (url.searchParams.get("district") || "Atasehir").trim();
+  const areaCity = canonicalAreaName(url.searchParams.get("city"), "Istanbul");
+  const areaDistrict = canonicalAreaName(url.searchParams.get("district"), "Atasehir");
 
   const runsRes = await DB.prepare(
     `

@@ -199,6 +199,36 @@
       .tiny {
         font-size: 0.9rem;
       }
+
+      details.logs {
+        margin-top: 0.4rem;
+      }
+
+      details.logs summary {
+        cursor: pointer;
+        font-weight: 700;
+        color: #3f5573;
+      }
+
+      .log-list {
+        margin-top: 0.6rem;
+        display: grid;
+        gap: 0.45rem;
+      }
+
+      .log-item {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 0.5rem 0.6rem;
+        font-size: 0.88rem;
+        background: #fbfcff;
+      }
+
+      .log-time {
+        color: var(--muted);
+        font-weight: 700;
+        margin-right: 0.35rem;
+      }
     </style>
   </head>
   <body>
@@ -245,6 +275,10 @@
       <section class="card">
         <h2 style="margin: 0 0 0.5rem">En Uygun 10 İlan</h2>
         <div id="dealList" class="deal-list"></div>
+        <details class="logs">
+          <summary>Teknik kayıtlar (sorun olursa açın)</summary>
+          <div id="logList" class="log-list"></div>
+        </details>
       </section>
     </main>
 
@@ -257,6 +291,7 @@
       const activeCountEl = document.getElementById("activeCount");
       const dealCountEl = document.getElementById("dealCount");
       const dealListEl = document.getElementById("dealList");
+      const logListEl = document.getElementById("logList");
 
       let locationData = [];
       let autoTimer = null;
@@ -281,6 +316,33 @@
       function pickByNormalized(values, target) {
         const wanted = normalizeForMatch(target);
         return values.find((x) => normalizeForMatch(x) === wanted) || null;
+      }
+
+      function canonicalAreaName(value, fallback) {
+        const raw = String(value || fallback || "")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (!raw) {
+          return String(fallback || "");
+        }
+        const ascii = raw
+          .toLocaleLowerCase("tr-TR")
+          .replace(/ç/g, "c")
+          .replace(/ğ/g, "g")
+          .replace(/ı/g, "i")
+          .replace(/ö/g, "o")
+          .replace(/ş/g, "s")
+          .replace(/ü/g, "u")
+          .replace(/[^a-z0-9 ]+/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (!ascii) {
+          return String(fallback || "");
+        }
+        return ascii
+          .split(" ")
+          .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : ""))
+          .join(" ");
       }
 
       function fmtInt(value) {
@@ -320,6 +382,13 @@
           return value;
         }
         return d.toLocaleString("tr-TR", { hour12: false });
+      }
+
+      function selectedArea() {
+        return {
+          city: canonicalAreaName(cityEl.value, "Istanbul"),
+          district: canonicalAreaName(districtEl.value, "Atasehir")
+        };
       }
 
       function fillDistricts(cityName) {
@@ -366,8 +435,7 @@
       }
 
       async function fetchRunInfo() {
-        const city = cityEl.value || "Istanbul";
-        const district = districtEl.value || "Atasehir";
+        const { city, district } = selectedArea();
         const params = new URLSearchParams({ city, district, limit: "1" });
         const res = await fetch(`/api/runs?${params.toString()}`);
         const body = await res.json();
@@ -380,8 +448,7 @@
       }
 
       async function fetchDeals() {
-        const city = cityEl.value || "Istanbul";
-        const district = districtEl.value || "Atasehir";
+        const { city, district } = selectedArea();
 
         const params = new URLSearchParams({
           city,
@@ -427,8 +494,34 @@
         }
       }
 
+      async function fetchLogs() {
+        const { city, district } = selectedArea();
+        const params = new URLSearchParams({ city, district, limit: "12" });
+        try {
+          const res = await fetch(`/api/logs?${params.toString()}`);
+          const body = await res.json();
+          if (!res.ok) {
+            throw new Error(body.error || `HTTP ${res.status}`);
+          }
+          const logs = body.logs || [];
+          logListEl.innerHTML = "";
+          if (logs.length === 0) {
+            logListEl.innerHTML = '<div class="empty">Henüz teknik kayıt yok.</div>';
+            return;
+          }
+          for (const row of logs) {
+            const item = document.createElement("div");
+            item.className = "log-item";
+            item.innerHTML = `<span class="log-time">${fmtDate(row.createdAt)}</span>${row.eventType} - ${row.message}`;
+            logListEl.appendChild(item);
+          }
+        } catch {
+          logListEl.innerHTML = '<div class="empty">Teknik kayıt okunamadı.</div>';
+        }
+      }
+
       async function refreshSnapshot() {
-        await Promise.all([fetchRunInfo(), fetchDeals()]);
+        await Promise.all([fetchRunInfo(), fetchDeals(), fetchLogs()]);
       }
 
       function startAutoRefresh() {
@@ -443,8 +536,7 @@
       }
 
       async function startScan() {
-        const city = cityEl.value;
-        const district = districtEl.value;
+        const { city, district } = selectedArea();
 
         startBtn.disabled = true;
         try {
