@@ -166,6 +166,7 @@ function parseArgs(argv) {
     sources: "all",
     timeoutMs: DEFAULT_TIMEOUT_MS,
     concurrency: DEFAULT_CONCURRENCY,
+    emlakjetDetailMax: 350,
     outputDir: DEFAULT_OUTPUT_DIR,
     writeOutput: true,
     writeSqlite: true,
@@ -187,6 +188,8 @@ function parseArgs(argv) {
       opts.timeoutMs = toPositiveInt(arg.slice("--timeout-ms=".length), DEFAULT_TIMEOUT_MS);
     } else if (arg.startsWith("--concurrency=")) {
       opts.concurrency = toPositiveInt(arg.slice("--concurrency=".length), DEFAULT_CONCURRENCY);
+    } else if (arg.startsWith("--emlakjet-detail-max=")) {
+      opts.emlakjetDetailMax = toPositiveInt(arg.slice("--emlakjet-detail-max=".length), 350);
     } else if (arg.startsWith("--output-dir=")) {
       opts.outputDir = arg.slice("--output-dir=".length) || DEFAULT_OUTPUT_DIR;
     } else if (arg.startsWith("--sqlite-path=")) {
@@ -313,13 +316,69 @@ async function crawlEmlakjet(ctx) {
     (x) => x
   );
 
-  const listings = listingPaths.map((listingPath) => {
+  const baseAddress = `${ctx.area.city} / ${ctx.area.district}`;
+  const detailTargets = listingPaths.slice(0, Math.max(1, ctx.emlakjetDetailMax || 350));
+  const detailConcurrency = Math.max(1, Math.min(ctx.concurrency || 4, 8));
+
+  const detailResults = await mapLimit(detailTargets, detailConcurrency, async (listingPath) => {
+    const listingId = extractTrailingNumber(listingPath);
+    const listingUrl = `https://www.emlakjet.com${listingPath}`;
+    const fallbackTitle = slugToTitle(listingPath);
+    try {
+      const detailHtml = await fetchTextWithBlockFallback(listingUrl, ctx.timeoutMs);
+      if (isCloudflareBlocked(detailHtml)) {
+        return {
+          blocked: true,
+          errored: false,
+          parsed: false,
+          listing: createListing(def.source, listingId, listingUrl, {
+            title: fallbackTitle,
+            address: baseAddress
+          })
+        };
+      }
+      const detail = parseEmlakjetListingDetail(detailHtml, ctx.area);
+      return {
+        blocked: false,
+        errored: false,
+        parsed: Boolean(detail._featureCount),
+        listing: createListing(def.source, listingId, listingUrl, {
+          title: detail.title || fallbackTitle,
+          address: detail.address || baseAddress,
+          neighborhood: detail.neighborhood || "",
+          roomCount: detail.roomCount || "",
+          buildingAge: detail.buildingAge || "",
+          floorInfo: detail.floorInfo || "",
+          priceTl: detail.priceTl,
+          grossSqm: detail.grossSqm,
+          netSqm: detail.netSqm,
+          avgPriceForSale: detail.avgPriceForSale,
+          endeksaMinPrice: detail.endeksaMinPrice,
+          endeksaMaxPrice: detail.endeksaMaxPrice
+        })
+      };
+    } catch {
+      return {
+        blocked: false,
+        errored: true,
+        parsed: false,
+        listing: createListing(def.source, listingId, listingUrl, {
+          title: fallbackTitle,
+          address: baseAddress
+        })
+      };
+    }
+  });
+
+  const detailListings = detailResults.map((x) => x.listing);
+  const remainingListings = listingPaths.slice(detailTargets.length).map((listingPath) => {
     const listingId = extractTrailingNumber(listingPath);
     return createListing(def.source, listingId, `https://www.emlakjet.com${listingPath}`, {
       title: slugToTitle(listingPath),
-      address: `${ctx.area.city} / ${ctx.area.district}`
+      address: baseAddress
     });
   });
+  const listings = [...detailListings, ...remainingListings];
 
   const notes = [];
   const blockedPages = pageResults.filter((x) => x.blocked).length;
@@ -331,6 +390,19 @@ async function crawlEmlakjet(ctx) {
     notes.push(`${errorPages} page(s) failed to fetch.`);
   }
   notes.push(`Fetched ${limitedPageUrls.length} emlakjet page(s).`);
+  const detailParsedCount = detailResults.filter((x) => x.parsed).length;
+  const detailBlockedCount = detailResults.filter((x) => x.blocked).length;
+  const detailErrorCount = detailResults.filter((x) => x.errored).length;
+  notes.push(`Parsed details for ${detailParsedCount}/${detailTargets.length} listing page(s).`);
+  if (detailBlockedCount > 0) {
+    notes.push(`${detailBlockedCount} detail page(s) returned challenge pages.`);
+  }
+  if (detailErrorCount > 0) {
+    notes.push(`${detailErrorCount} detail page(s) failed to fetch.`);
+  }
+  if (listingPaths.length > detailTargets.length) {
+    notes.push(`Detail parsing capped at ${detailTargets.length} listing(s).`);
+  }
 
   return {
     source: def.source,
@@ -527,6 +599,95 @@ function parseEmlakjetObservedTotal(html) {
   return null;
 }
 
+function parseEmlakjetListingDetail(html, area) {
+  const title = cleanTitle(decodeHtml(extractRegexGroup(html, /<title>([^<]+)<\/title>/i) || ""));
+  const cityName =
+    decodeHtml(
+      extractFirstRegexGroup(html, [
+        /"il"\s*:\s*\{"definition":\{"id":[^}]*"name":"([^"]+)"/i,
+        /"key":"il","value":\{"definition":\{"id":[^}]*"name":"([^"]+)"/i,
+        /"cityName":"([^"]+)"/i
+      ])
+    ) || area.city;
+  const districtName =
+    decodeHtml(
+      extractFirstRegexGroup(html, [
+        /"ilce"\s*:\s*\{"definition":\{"id":[^}]*"name":"([^"]+)"/i,
+        /"key":"ilce","value":\{"definition":\{"id":[^}]*"name":"([^"]+)"/i,
+        /"districtName":"([^"]+)"/i
+      ])
+    ) || area.district;
+  const neighborhood = decodeHtml(
+    extractFirstRegexGroup(html, [
+      /"mahalle"\s*:\s*\{"definition":\{"id":[^}]*"name":"([^"]+)"/i,
+      /"key":"mahalle","value":\{"definition":\{"id":[^}]*"name":"([^"]+)"/i,
+      /"townName":"([^"]+)"/i
+    ])
+  );
+
+  const addressParts = [cityName, districtName, neighborhood].filter(Boolean);
+  const address = addressParts.length ? addressParts.join(" / ") : `${area.city} / ${area.district}`;
+
+  const priceTl = firstFiniteNumber([
+    parseLooseNumber(extractRegexGroup(html, /"ilan_fiyat"\s*:\s*\{"definition"\s*:\s*([0-9.]+)/i)),
+    parseLooseNumber(extractRegexGroup(html, /"key":"ilan_fiyat","value":\{"definition":([0-9.]+)/i)),
+    parseLooseNumber(extractRegexGroup(html, /"ilan_fiyat":"([0-9.]+)"/i)),
+    parseLooseNumber(extractRegexGroup(html, /"offers"\s*:\s*\{"@type":"Offer"[^}]*"price":"([0-9.]+)"/i))
+  ]);
+  const grossSqm = parseSqmValue(
+    extractFirstRegexGroup(html, [
+      /"ilan_metrekare_brut"\s*:\s*\{"definition"\s*:\s*"([^"]+)"/i,
+      /"key":"ilan_metrekare_brut","value":\{"definition":"([^"]+)"/i,
+      /"description":"[^"]*?([0-9]+(?:[.,][0-9]+)?)\s*m²/i,
+      /"description":"[^"]*?([0-9]+(?:[.,][0-9]+)?)\s*m2/i
+    ])
+  );
+  const netSqm = parseSqmValue(
+    extractFirstRegexGroup(html, [
+      /"ilan_metrekare_net"\s*:\s*\{"definition"\s*:\s*"([^"]+)"/i,
+      /"key":"ilan_metrekare_net","value":\{"definition":"([^"]+)"/i
+    ])
+  );
+  const roomCount =
+    extractFirstRegexGroup(html, [
+      /"ilan_oda"\s*:\s*\{"definition"\s*:\s*"([^"]+)"/i,
+      /"key":"ilan_oda","value":\{"definition":"([^"]+)"/i,
+      /"oda_sayisi":"([^"]+)"/i
+    ]) || "";
+  const buildingAge =
+    extractFirstRegexGroup(html, [
+      /"ilan_bina_yas"\s*:\s*\{"definition"\s*:\s*"([^"]+)"/i,
+      /"key":"ilan_bina_yas","value":\{"definition":"([^"]+)"/i
+    ]) || "";
+  const floorInfo =
+    extractFirstRegexGroup(html, [
+      /"ilan_kat"\s*:\s*\{"definition"\s*:\s*"([^"]+)"/i,
+      /"key":"ilan_kat","value":\{"definition":"([^"]+)"/i
+    ]) || "";
+  const avgPriceForSale = parseLooseNumber(extractRegexGroup(html, /"averagePriceForSale"\s*:\s*([0-9.]+)/i));
+  const endeksaMinPrice = parseLooseNumber(extractRegexGroup(html, /"endeksaValuation"\s*:\s*\{"minPrice"\s*:\s*([0-9.]+)/i));
+  const endeksaMaxPrice = parseLooseNumber(extractRegexGroup(html, /"endeksaValuation"\s*:\s*\{[^}]*"maxPrice"\s*:\s*([0-9.]+)/i));
+
+  const featureCount = [priceTl, grossSqm, netSqm, roomCount, buildingAge, floorInfo, avgPriceForSale].filter(Boolean)
+    .length;
+
+  return {
+    _featureCount: featureCount,
+    title,
+    address,
+    neighborhood,
+    roomCount,
+    buildingAge,
+    floorInfo,
+    priceTl,
+    grossSqm,
+    netSqm,
+    avgPriceForSale,
+    endeksaMinPrice,
+    endeksaMaxPrice
+  };
+}
+
 function parseTuryapObservedTotal(html) {
   const m = html.match(/Toplamda\s*:\s*([0-9.]+)\s*ilan\s*listelendi\./i);
   if (!m) {
@@ -552,6 +713,16 @@ function createListing(source, listingId, url, extra) {
     url,
     title: extra.title || "",
     address: extra.address || "",
+    neighborhood: extra.neighborhood || "",
+    roomCount: extra.roomCount || "",
+    buildingAge: extra.buildingAge || "",
+    floorInfo: extra.floorInfo || "",
+    priceTl: toNullableNumber(extra.priceTl),
+    grossSqm: toNullableNumber(extra.grossSqm),
+    netSqm: toNullableNumber(extra.netSqm),
+    avgPriceForSale: toNullableNumber(extra.avgPriceForSale),
+    endeksaMinPrice: toNullableNumber(extra.endeksaMinPrice),
+    endeksaMaxPrice: toNullableNumber(extra.endeksaMaxPrice),
     crawledAt: new Date().toISOString()
   };
 }
@@ -619,6 +790,71 @@ function stripTags(input) {
   return input.replace(/<[^>]+>/g, " ");
 }
 
+function cleanTitle(title) {
+  return String(title || "")
+    .replace(/\s+/g, " ")
+    .replace(/#\d+\s*$/, "")
+    .trim();
+}
+
+function extractRegexGroup(text, regex) {
+  const raw = String(text || "");
+  const candidates = [raw];
+  if (raw.includes('\\"')) {
+    candidates.push(raw.replace(/\\"/g, '"'));
+  }
+  for (const candidate of candidates) {
+    const match = candidate.match(regex);
+    if (match && match[1]) {
+      return decodeUnicodeEscapes(match[1]);
+    }
+  }
+  return "";
+}
+
+function extractFirstRegexGroup(text, regexes) {
+  for (const regex of regexes) {
+    const value = extractRegexGroup(text, regex);
+    if (value) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function parseLooseNumber(text) {
+  if (text == null) {
+    return null;
+  }
+  const cleaned = String(text).replace(/[^0-9.,-]/g, "");
+  if (!cleaned) {
+    return null;
+  }
+  const normalized = cleaned.includes(",") && !cleaned.includes(".") ? cleaned.replace(",", ".") : cleaned.replace(/,/g, "");
+  const n = Number(normalized);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseSqmValue(text) {
+  if (!text) {
+    return null;
+  }
+  const match = String(text).match(/([0-9]+(?:[.,][0-9]+)?)/);
+  if (!match) {
+    return null;
+  }
+  return parseLooseNumber(match[1]);
+}
+
+function firstFiniteNumber(values) {
+  for (const value of values) {
+    if (Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
 function decodeHtml(input) {
   return input
     .replace(/&nbsp;/gi, " ")
@@ -628,6 +864,12 @@ function decodeHtml(input) {
     .replace(/&apos;/gi, "'")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">");
+}
+
+function decodeUnicodeEscapes(input) {
+  return String(input || "").replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
+    String.fromCharCode(Number.parseInt(hex, 16))
+  );
 }
 
 function normalizeAreaName(text) {
@@ -686,6 +928,14 @@ function toPositiveInt(value, fallback) {
   return Math.floor(n);
 }
 
+function toNullableNumber(value) {
+  if (value == null || value === "") {
+    return null;
+  }
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 async function mapLimit(items, limit, mapper) {
   if (items.length === 0) {
     return [];
@@ -710,7 +960,25 @@ async function mapLimit(items, limit, mapper) {
 }
 
 function toCsv(rows) {
-  const headers = ["source", "listingKey", "listingId", "url", "title", "address", "crawledAt"];
+  const headers = [
+    "source",
+    "listingKey",
+    "listingId",
+    "url",
+    "title",
+    "address",
+    "neighborhood",
+    "roomCount",
+    "buildingAge",
+    "floorInfo",
+    "priceTl",
+    "grossSqm",
+    "netSqm",
+    "avgPriceForSale",
+    "endeksaMinPrice",
+    "endeksaMaxPrice",
+    "crawledAt"
+  ];
   const lines = [headers.join(",")];
   for (const row of rows) {
     const values = headers.map((h) => csvEscape(row[h]));

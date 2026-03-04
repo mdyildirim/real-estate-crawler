@@ -29,8 +29,26 @@ function normalizeListing(row) {
     url: row?.url || "",
     title: row?.title || "",
     address: row?.address || "",
+    neighborhood: row?.neighborhood || "",
+    roomCount: row?.roomCount || "",
+    buildingAge: row?.buildingAge || "",
+    floorInfo: row?.floorInfo || "",
+    priceTl: toNullableNumber(row?.priceTl),
+    grossSqm: toNullableNumber(row?.grossSqm),
+    netSqm: toNullableNumber(row?.netSqm),
+    avgPriceForSale: toNullableNumber(row?.avgPriceForSale),
+    endeksaMinPrice: toNullableNumber(row?.endeksaMinPrice),
+    endeksaMaxPrice: toNullableNumber(row?.endeksaMaxPrice),
     crawledAt: row?.crawledAt || new Date().toISOString()
   };
+}
+
+function toNullableNumber(value) {
+  if (value == null || value === "") {
+    return null;
+  }
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }
 
 async function parseJsonBody(request) {
@@ -147,13 +165,25 @@ export async function onRequestPost(context) {
       `
         INSERT INTO listings_current (
           source, listing_key, listing_id, url, title, address,
+          neighborhood, room_count, building_age, floor_info, price_tl, gross_sqm, net_sqm,
+          avg_price_for_sale, endeksa_min_price, endeksa_max_price,
           area_city, area_district, first_seen_at, last_seen_at, last_seen_run_id, last_crawled_at, is_active
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         ON CONFLICT(source, listing_key) DO UPDATE SET
           listing_id = excluded.listing_id,
           url = excluded.url,
           title = excluded.title,
           address = excluded.address,
+          neighborhood = excluded.neighborhood,
+          room_count = excluded.room_count,
+          building_age = excluded.building_age,
+          floor_info = excluded.floor_info,
+          price_tl = excluded.price_tl,
+          gross_sqm = excluded.gross_sqm,
+          net_sqm = excluded.net_sqm,
+          avg_price_for_sale = excluded.avg_price_for_sale,
+          endeksa_min_price = excluded.endeksa_min_price,
+          endeksa_max_price = excluded.endeksa_max_price,
           last_seen_at = excluded.last_seen_at,
           last_seen_run_id = excluded.last_seen_run_id,
           last_crawled_at = excluded.last_crawled_at,
@@ -167,6 +197,16 @@ export async function onRequestPost(context) {
         listing.url,
         listing.title,
         listing.address,
+        listing.neighborhood,
+        listing.roomCount,
+        listing.buildingAge,
+        listing.floorInfo,
+        listing.priceTl,
+        listing.grossSqm,
+        listing.netSqm,
+        listing.avgPriceForSale,
+        listing.endeksaMinPrice,
+        listing.endeksaMaxPrice,
         runInfo.areaCity,
         runInfo.areaDistrict,
         listing.crawledAt,
@@ -179,13 +219,25 @@ export async function onRequestPost(context) {
     await DB.prepare(
       `
         INSERT INTO listing_snapshots (
-          run_id, source, listing_key, listing_id, url, title, address, crawled_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          run_id, source, listing_key, listing_id, url, title, address,
+          neighborhood, room_count, building_age, floor_info, price_tl, gross_sqm, net_sqm,
+          avg_price_for_sale, endeksa_min_price, endeksa_max_price, crawled_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(run_id, source, listing_key) DO UPDATE SET
           listing_id = excluded.listing_id,
           url = excluded.url,
           title = excluded.title,
           address = excluded.address,
+          neighborhood = excluded.neighborhood,
+          room_count = excluded.room_count,
+          building_age = excluded.building_age,
+          floor_info = excluded.floor_info,
+          price_tl = excluded.price_tl,
+          gross_sqm = excluded.gross_sqm,
+          net_sqm = excluded.net_sqm,
+          avg_price_for_sale = excluded.avg_price_for_sale,
+          endeksa_min_price = excluded.endeksa_min_price,
+          endeksa_max_price = excluded.endeksa_max_price,
           crawled_at = excluded.crawled_at
       `
     )
@@ -197,6 +249,16 @@ export async function onRequestPost(context) {
         listing.url,
         listing.title,
         listing.address,
+        listing.neighborhood,
+        listing.roomCount,
+        listing.buildingAge,
+        listing.floorInfo,
+        listing.priceTl,
+        listing.grossSqm,
+        listing.netSqm,
+        listing.avgPriceForSale,
+        listing.endeksaMinPrice,
+        listing.endeksaMaxPrice,
         listing.crawledAt
       )
       .run();

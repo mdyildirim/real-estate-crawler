@@ -38,6 +38,16 @@ CREATE TABLE IF NOT EXISTS listings_current (
   url TEXT NOT NULL,
   title TEXT,
   address TEXT,
+  neighborhood TEXT,
+  room_count TEXT,
+  building_age TEXT,
+  floor_info TEXT,
+  price_tl INTEGER,
+  gross_sqm REAL,
+  net_sqm REAL,
+  avg_price_for_sale INTEGER,
+  endeksa_min_price INTEGER,
+  endeksa_max_price INTEGER,
   area_city TEXT NOT NULL,
   area_district TEXT NOT NULL,
   first_seen_at TEXT NOT NULL,
@@ -52,6 +62,8 @@ CREATE TABLE IF NOT EXISTS listings_current (
 CREATE INDEX IF NOT EXISTS idx_listings_current_source ON listings_current(source);
 CREATE INDEX IF NOT EXISTS idx_listings_current_area_active ON listings_current(area_city, area_district, is_active);
 CREATE INDEX IF NOT EXISTS idx_listings_current_last_seen ON listings_current(last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_listings_current_price_tl ON listings_current(price_tl);
+CREATE INDEX IF NOT EXISTS idx_listings_current_room_neighborhood ON listings_current(room_count, neighborhood);
 
 CREATE TABLE IF NOT EXISTS listing_snapshots (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,6 +74,16 @@ CREATE TABLE IF NOT EXISTS listing_snapshots (
   url TEXT NOT NULL,
   title TEXT,
   address TEXT,
+  neighborhood TEXT,
+  room_count TEXT,
+  building_age TEXT,
+  floor_info TEXT,
+  price_tl INTEGER,
+  gross_sqm REAL,
+  net_sqm REAL,
+  avg_price_for_sale INTEGER,
+  endeksa_min_price INTEGER,
+  endeksa_max_price INTEGER,
   crawled_at TEXT NOT NULL,
   FOREIGN KEY (run_id) REFERENCES crawl_runs(id) ON DELETE CASCADE,
   UNIQUE(run_id, source, listing_key)

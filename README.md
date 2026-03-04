@@ -28,6 +28,12 @@ Run specific city/district:
 npm run crawl -- --city=Ankara --district=Cankaya --sources=emlakjet
 ```
 
+Control detail fetch cap for Emlakjet listing pages (feature extraction):
+
+```bash
+npm run crawl -- --city=Istanbul --district=Atasehir --sources=emlakjet --emlakjet-detail-max=350
+```
+
 Quick multi-source run:
 
 ```bash
@@ -56,6 +62,7 @@ Schema:
 
 - `db/schema.sql`
 - `db/migrations/0001_init.sql`
+- `db/migrations/0002_listing_features.sql`
 
 ## Output Files
 
@@ -109,6 +116,7 @@ UI features:
 - pick source set
 - dispatch crawl workflow via `/api/crawl-request`
 - list recent runs from D1 via `/api/runs?city=...&district=...`
+- view ranked undervalued listings via `/api/deals` with adjustable filters
 
 City/district options come from `public/tr-locations.json` (81 cities / 973 districts).
 
@@ -117,6 +125,7 @@ City/district options come from `public/tr-locations.json` (81 cities / 973 dist
 - `GET /api/health`
 - `GET /api/runs?city=Istanbul&district=Atasehir&limit=20`
 - `GET /api/listings?city=Istanbul&district=Atasehir&active=1&limit=50`
+- `GET /api/deals?city=Istanbul&district=Atasehir&limit=25&min_discount=0.12&min_confidence=0.35&min_comps=6`
 - `POST /api/ingest`
 - `POST /api/crawl-request`
 

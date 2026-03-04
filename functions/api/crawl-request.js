@@ -47,11 +47,22 @@ export async function onRequestPost(context) {
   const workflowFile = context.env?.GITHUB_WORKFLOW_FILE || "crawl.yml";
   const ref = context.env?.GITHUB_REF || "main";
 
-  if (!githubToken || !owner || !repo) {
+  const missing = [];
+  if (!githubToken) {
+    missing.push("GITHUB_TOKEN");
+  }
+  if (!owner) {
+    missing.push("GITHUB_OWNER");
+  }
+  if (!repo) {
+    missing.push("GITHUB_REPO");
+  }
+
+  if (missing.length > 0) {
     return json(
       {
         ok: false,
-        error: "Missing GitHub configuration env vars. Required: GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO."
+        error: `Missing GitHub configuration env vars: ${missing.join(", ")}`
       },
       500
     );

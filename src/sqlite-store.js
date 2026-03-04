@@ -20,7 +20,10 @@ function persistRunToSqlite({ dbPath, runTag, payload }) {
   const db = new BetterSqlite3(dbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
+  // Upgrade older local DB files before schema index creation runs.
+  ensureFeatureColumns(db);
   db.exec(fs.readFileSync(SCHEMA_PATH, "utf8"));
+  ensureFeatureColumns(db);
 
   const nowIso = new Date().toISOString();
 
@@ -46,13 +49,25 @@ function persistRunToSqlite({ dbPath, runTag, payload }) {
   const upsertListingCurrentStmt = db.prepare(`
     INSERT INTO listings_current (
       source, listing_key, listing_id, url, title, address,
+      neighborhood, room_count, building_age, floor_info, price_tl, gross_sqm, net_sqm,
+      avg_price_for_sale, endeksa_min_price, endeksa_max_price,
       area_city, area_district, first_seen_at, last_seen_at, last_seen_run_id, last_crawled_at, is_active
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
     ON CONFLICT(source, listing_key) DO UPDATE SET
       listing_id = excluded.listing_id,
       url = excluded.url,
       title = excluded.title,
       address = excluded.address,
+      neighborhood = excluded.neighborhood,
+      room_count = excluded.room_count,
+      building_age = excluded.building_age,
+      floor_info = excluded.floor_info,
+      price_tl = excluded.price_tl,
+      gross_sqm = excluded.gross_sqm,
+      net_sqm = excluded.net_sqm,
+      avg_price_for_sale = excluded.avg_price_for_sale,
+      endeksa_min_price = excluded.endeksa_min_price,
+      endeksa_max_price = excluded.endeksa_max_price,
       last_seen_at = excluded.last_seen_at,
       last_seen_run_id = excluded.last_seen_run_id,
       last_crawled_at = excluded.last_crawled_at,
@@ -61,13 +76,25 @@ function persistRunToSqlite({ dbPath, runTag, payload }) {
 
   const insertSnapshotStmt = db.prepare(`
     INSERT INTO listing_snapshots (
-      run_id, source, listing_key, listing_id, url, title, address, crawled_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      run_id, source, listing_key, listing_id, url, title, address,
+      neighborhood, room_count, building_age, floor_info, price_tl, gross_sqm, net_sqm,
+      avg_price_for_sale, endeksa_min_price, endeksa_max_price, crawled_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(run_id, source, listing_key) DO UPDATE SET
       listing_id = excluded.listing_id,
       url = excluded.url,
       title = excluded.title,
       address = excluded.address,
+      neighborhood = excluded.neighborhood,
+      room_count = excluded.room_count,
+      building_age = excluded.building_age,
+      floor_info = excluded.floor_info,
+      price_tl = excluded.price_tl,
+      gross_sqm = excluded.gross_sqm,
+      net_sqm = excluded.net_sqm,
+      avg_price_for_sale = excluded.avg_price_for_sale,
+      endeksa_min_price = excluded.endeksa_min_price,
+      endeksa_max_price = excluded.endeksa_max_price,
       crawled_at = excluded.crawled_at
   `);
 
@@ -125,6 +152,16 @@ function persistRunToSqlite({ dbPath, runTag, payload }) {
         listing.url || "",
         listing.title || "",
         listing.address || "",
+        listing.neighborhood || "",
+        listing.roomCount || "",
+        listing.buildingAge || "",
+        listing.floorInfo || "",
+        toNullableNumber(listing.priceTl),
+        toNullableNumber(listing.grossSqm),
+        toNullableNumber(listing.netSqm),
+        toNullableNumber(listing.avgPriceForSale),
+        toNullableNumber(listing.endeksaMinPrice),
+        toNullableNumber(listing.endeksaMaxPrice),
         area.city || "Istanbul",
         area.district || "Atasehir",
         crawledAt,
@@ -140,6 +177,16 @@ function persistRunToSqlite({ dbPath, runTag, payload }) {
         listing.url || "",
         listing.title || "",
         listing.address || "",
+        listing.neighborhood || "",
+        listing.roomCount || "",
+        listing.buildingAge || "",
+        listing.floorInfo || "",
+        toNullableNumber(listing.priceTl),
+        toNullableNumber(listing.grossSqm),
+        toNullableNumber(listing.netSqm),
+        toNullableNumber(listing.avgPriceForSale),
+        toNullableNumber(listing.endeksaMinPrice),
+        toNullableNumber(listing.endeksaMaxPrice),
         crawledAt
       );
     }
@@ -160,6 +207,51 @@ function persistRunToSqlite({ dbPath, runTag, payload }) {
   const out = tx();
   db.close();
   return out;
+}
+
+function toNullableNumber(value) {
+  if (value == null || value === "") {
+    return null;
+  }
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function ensureFeatureColumns(db) {
+  const alterStatements = [
+    "ALTER TABLE listings_current ADD COLUMN neighborhood TEXT",
+    "ALTER TABLE listings_current ADD COLUMN room_count TEXT",
+    "ALTER TABLE listings_current ADD COLUMN building_age TEXT",
+    "ALTER TABLE listings_current ADD COLUMN floor_info TEXT",
+    "ALTER TABLE listings_current ADD COLUMN price_tl INTEGER",
+    "ALTER TABLE listings_current ADD COLUMN gross_sqm REAL",
+    "ALTER TABLE listings_current ADD COLUMN net_sqm REAL",
+    "ALTER TABLE listings_current ADD COLUMN avg_price_for_sale INTEGER",
+    "ALTER TABLE listings_current ADD COLUMN endeksa_min_price INTEGER",
+    "ALTER TABLE listings_current ADD COLUMN endeksa_max_price INTEGER",
+    "ALTER TABLE listing_snapshots ADD COLUMN neighborhood TEXT",
+    "ALTER TABLE listing_snapshots ADD COLUMN room_count TEXT",
+    "ALTER TABLE listing_snapshots ADD COLUMN building_age TEXT",
+    "ALTER TABLE listing_snapshots ADD COLUMN floor_info TEXT",
+    "ALTER TABLE listing_snapshots ADD COLUMN price_tl INTEGER",
+    "ALTER TABLE listing_snapshots ADD COLUMN gross_sqm REAL",
+    "ALTER TABLE listing_snapshots ADD COLUMN net_sqm REAL",
+    "ALTER TABLE listing_snapshots ADD COLUMN avg_price_for_sale INTEGER",
+    "ALTER TABLE listing_snapshots ADD COLUMN endeksa_min_price INTEGER",
+    "ALTER TABLE listing_snapshots ADD COLUMN endeksa_max_price INTEGER",
+    "CREATE INDEX IF NOT EXISTS idx_listings_current_price_tl ON listings_current(price_tl)",
+    "CREATE INDEX IF NOT EXISTS idx_listings_current_room_neighborhood ON listings_current(room_count, neighborhood)"
+  ];
+
+  for (const sql of alterStatements) {
+    try {
+      db.exec(sql);
+    } catch (error) {
+      if (!/duplicate column name|already exists|no such table/i.test(String(error.message || error))) {
+        throw error;
+      }
+    }
+  }
 }
 
 module.exports = {

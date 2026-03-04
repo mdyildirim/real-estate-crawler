@@ -100,6 +100,14 @@
         padding: 0.7rem;
         min-height: 56px;
       }
+      a.listing-link {
+        color: #0b57d0;
+        text-decoration: none;
+        font-weight: 600;
+      }
+      a.listing-link:hover {
+        text-decoration: underline;
+      }
     </style>
   </head>
   <body>
@@ -157,6 +165,47 @@
           </table>
         </section>
       </div>
+
+      <section class="card" style="margin-top: 1rem">
+        <h2 style="margin-top: 0">Undervalued Deals (Prototype)</h2>
+        <p class="muted">Ranked by discount vs. area comparables and confidence.</p>
+        <div class="grid">
+          <div class="grid cols-2">
+            <div>
+              <label for="dealsLimit">Max Results</label>
+              <input id="dealsLimit" type="number" min="1" max="100" value="25" />
+            </div>
+            <div>
+              <label for="minDiscount">Min Discount (0-1)</label>
+              <input id="minDiscount" type="number" min="-0.5" max="0.9" step="0.01" value="0.12" />
+            </div>
+            <div>
+              <label for="minConfidence">Min Confidence (0-1)</label>
+              <input id="minConfidence" type="number" min="0" max="1" step="0.01" value="0.35" />
+            </div>
+            <div>
+              <label for="minComps">Min Comparables</label>
+              <input id="minComps" type="number" min="3" max="50" value="6" />
+            </div>
+          </div>
+          <div class="btn-row">
+            <button id="findDeals" class="secondary">Find Deals</button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Score</th>
+                <th>Discount</th>
+                <th>Price</th>
+                <th>Fair</th>
+                <th>Comps</th>
+                <th>Listing</th>
+              </tr>
+            </thead>
+            <tbody id="deals"></tbody>
+          </table>
+        </div>
+      </section>
     </main>
 
     <script>
@@ -168,6 +217,12 @@
       const runsEl = document.getElementById("runs");
       const dispatchBtn = document.getElementById("dispatch");
       const refreshBtn = document.getElementById("refresh");
+      const dealsEl = document.getElementById("deals");
+      const findDealsBtn = document.getElementById("findDeals");
+      const dealsLimitEl = document.getElementById("dealsLimit");
+      const minDiscountEl = document.getElementById("minDiscount");
+      const minConfidenceEl = document.getElementById("minConfidence");
+      const minCompsEl = document.getElementById("minComps");
 
       let locationData = [];
 
@@ -202,6 +257,29 @@
           opt.textContent = district;
           districtEl.appendChild(opt);
         }
+      }
+
+      function toFiniteNumber(value, fallback) {
+        const n = Number(value);
+        return Number.isFinite(n) ? n : fallback;
+      }
+
+      function fmtPct(value) {
+        if (!Number.isFinite(value)) {
+          return "-";
+        }
+        return `${(value * 100).toFixed(1)}%`;
+      }
+
+      function fmtTl(value) {
+        if (!Number.isFinite(value)) {
+          return "-";
+        }
+        return new Intl.NumberFormat("tr-TR", {
+          style: "currency",
+          currency: "TRY",
+          maximumFractionDigits: 0
+        }).format(value);
       }
 
       async function loadLocations() {
@@ -253,6 +331,52 @@
         }
       }
 
+      async function loadDeals() {
+        const city = cityEl.value || "Istanbul";
+        const district = districtEl.value || "Atasehir";
+        const limit = String(Math.max(1, Math.min(100, Math.floor(toFiniteNumber(dealsLimitEl.value, 25)))));
+        const minDiscount = String(toFiniteNumber(minDiscountEl.value, 0.12));
+        const minConfidence = String(toFiniteNumber(minConfidenceEl.value, 0.35));
+        const minComps = String(Math.max(3, Math.min(50, Math.floor(toFiniteNumber(minCompsEl.value, 6)))));
+
+        const params = new URLSearchParams({
+          city,
+          district,
+          limit,
+          min_discount: minDiscount,
+          min_confidence: minConfidence,
+          min_comps: minComps
+        });
+        const res = await fetch(`/api/deals?${params.toString()}`);
+        const body = await res.json();
+        if (!res.ok) {
+          throw new Error(body.error || `HTTP ${res.status}`);
+        }
+
+        const deals = body.deals || [];
+        dealsEl.innerHTML = "";
+        if (deals.length === 0) {
+          dealsEl.innerHTML = "<tr><td colspan='6'>No deals matched filters in selected area yet.</td></tr>";
+          return body.totals || null;
+        }
+
+        for (const d of deals) {
+          const title = (d.title || "listing").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          const safeUrl = String(d.url || "").replace(/"/g, "&quot;");
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td>${fmtPct(d.score)}</td>
+            <td>${fmtPct(d.discountPct)}</td>
+            <td>${fmtTl(d.priceTl)}</td>
+            <td>${fmtTl(d.fairPriceEstimate)}</td>
+            <td>${d.comparableCount} (${d.comparableBucket})</td>
+            <td><a class="listing-link" href="${safeUrl}" target="_blank" rel="noopener noreferrer">${title}</a></td>
+          `;
+          dealsEl.appendChild(tr);
+        }
+        return body.totals || null;
+      }
+
       async function dispatchCrawl() {
         const city = cityEl.value;
         const district = districtEl.value;
@@ -275,7 +399,7 @@
           if (!res.ok) {
             throw new Error(body.error || `HTTP ${res.status}`);
           }
-          setStatus(`Workflow dispatched.\ncity=${city}\ndistrict=${district}\nsources=${sources}`);
+          setStatus(`Workflow dispatched.\ncity=${city}\ndistrict=${district}\nsources=${sources}\nRefresh in 1-2 min to see new rows.`);
         } catch (error) {
           setStatus(`Dispatch failed: ${String(error.message || error)}`);
         } finally {
@@ -285,22 +409,42 @@
 
       cityEl.addEventListener("change", () => {
         fillDistricts(cityEl.value);
-        loadRuns().catch((error) => setStatus(`Run list error: ${String(error)}`));
+        Promise.all([loadRuns(), loadDeals()]).catch((error) => setStatus(`Area refresh error: ${String(error)}`));
       });
       districtEl.addEventListener("change", () => {
-        loadRuns().catch((error) => setStatus(`Run list error: ${String(error)}`));
+        Promise.all([loadRuns(), loadDeals()]).catch((error) => setStatus(`Area refresh error: ${String(error)}`));
       });
       refreshBtn.addEventListener("click", () => {
-        loadRuns().catch((error) => setStatus(`Run list error: ${String(error)}`));
+        Promise.all([loadRuns(), loadDeals()])
+          .then(() => setStatus("Refreshed runs and deals."))
+          .catch((error) => setStatus(`Refresh error: ${String(error)}`));
       });
       dispatchBtn.addEventListener("click", () => {
         dispatchCrawl().catch((error) => setStatus(`Dispatch error: ${String(error)}`));
+      });
+      findDealsBtn.addEventListener("click", () => {
+        findDealsBtn.disabled = true;
+        loadDeals()
+          .then((totals) => {
+            if (!totals) {
+              setStatus("Deals loaded.");
+              return;
+            }
+            setStatus(
+              `Deals refreshed.\nactive=${totals.activeListings}\nwithPriceSqm=${totals.listingsWithPriceAndSqm}\nmatched=${totals.dealsMatched}`
+            );
+          })
+          .catch((error) => setStatus(`Deals error: ${String(error)}`))
+          .finally(() => {
+            findDealsBtn.disabled = false;
+          });
       });
 
       (async function bootstrap() {
         try {
           await loadLocations();
           await loadRuns();
+          await loadDeals();
           setStatus("Ready.");
         } catch (error) {
           setStatus(`Bootstrap failed: ${String(error.message || error)}`);
