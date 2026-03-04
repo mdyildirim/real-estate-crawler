@@ -548,10 +548,18 @@
           const sizeScore = finiteOr(reason.sizeScore);
           const freshnessScore = finiteOr(reason.freshnessScore);
           const floorScore = finiteOr(reason.floorScore);
+          const tapuScore = finiteOr(reason.tapuScore);
+          const krediScore = finiteOr(reason.krediScore);
+          const siteScore = finiteOr(reason.siteScore);
+          const usageScore = finiteOr(reason.usageScore);
           const livabilityQuality = finiteOr(reason.livabilityQuality);
           const ageYears = finiteOr(reason.buildingAgeYears);
           const floorRaw = reason.floorRaw ? escHtml(reason.floorRaw) : "-";
           const ageRaw = reason.buildingAgeRaw ? escHtml(reason.buildingAgeRaw) : "-";
+          const deedStatusRaw = reason.deedStatusRaw ? escHtml(reason.deedStatusRaw) : "-";
+          const creditSuitabilityRaw = reason.creditSuitabilityRaw ? escHtml(reason.creditSuitabilityRaw) : "-";
+          const inSiteRaw = reason.inSiteRaw ? escHtml(reason.inSiteRaw) : "-";
+          const usageStatusRaw = reason.usageStatusRaw ? escHtml(reason.usageStatusRaw) : "-";
 
           const item = document.createElement("div");
           item.className = "deal";
@@ -568,12 +576,15 @@
               <div class="reason-line">Kullanılan alan: ${sqmTypeLabel} (${fmtInt(effectiveSqm)} m²)</div>
               <div class="reason-line">Bina yaşı: ${ageRaw} (${Number.isFinite(ageYears) ? `${ageYears.toFixed(1)} yıl` : "hesaplanamadı"})</div>
               <div class="reason-line">Kat bilgisi: ${floorRaw}</div>
+              <div class="reason-line">Tapu durumu: ${deedStatusRaw} | Krediye uygunluk: ${creditSuitabilityRaw}</div>
+              <div class="reason-line">Site içerisinde: ${inSiteRaw} | Kullanım durumu: ${usageStatusRaw}</div>
               <div class="reason-line">Bu ilanın m² fiyatı: ${fmtMoney(listingPsm)}</div>
               <div class="reason-line">Emsal medyan m² fiyatı: ${fmtMoney(compMedianPsm)}</div>
               <div class="reason-line">m² bazında fark: ${fmtPct(gapPct)}</div>
               <div class="reason-line">İndirim tutarı: ${fmtMoney(discountAmount)} (${fmtPct(discountPct)})</div>
               <div class="reason-line">Güven skoru: ${fmtPct(confidence)} | Dağılım: ${fmtPct(dispersionRatio)} | Benzerlik ort.: ${fmtPct(avgSimilarity)}</div>
-              <div class="reason-line">Kalite çarpanı: ${qualityMultiplier == null ? "-" : qualityMultiplier.toFixed(2)} | Boyut:${fmtPct(sizeScore)} Yaş:${fmtPct(freshnessScore)} Kat:${fmtPct(floorScore)} Toplam kalite:${fmtPct(livabilityQuality)}</div>
+              <div class="reason-line">Kalite çarpanı: ${qualityMultiplier == null ? "-" : qualityMultiplier.toFixed(2)} | Boyut:${fmtPct(sizeScore)} Yaş:${fmtPct(freshnessScore)} Kat:${fmtPct(floorScore)}</div>
+              <div class="reason-line">Hukuk/yaşam etkisi: Tapu:${fmtPct(tapuScore)} Kredi:${fmtPct(krediScore)} Site:${fmtPct(siteScore)} Kullanım:${fmtPct(usageScore)} Toplam kalite:${fmtPct(livabilityQuality)}</div>
               <div class="reason-line">Endeksa farkı: ${
                 Number.isFinite(endeksaGap)
                   ? `${fmtPct(endeksaGap)}`

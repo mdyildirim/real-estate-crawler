@@ -217,6 +217,196 @@ function floorSimilarity(targetCategory, compCategory) {
   return 0.35;
 }
 
+function parseDeedCategory(deedText) {
+  const normalized = normalizeForMatch(deedText || "").replace(/-/g, " ");
+  if (!normalized) {
+    return "unknown";
+  }
+  if (normalized.includes("hisseli")) {
+    return "hisseli";
+  }
+  if (normalized.includes("mustakil")) {
+    return "mustakil";
+  }
+  if (normalized.includes("kat mulkiyeti")) {
+    return "kat_mulkiyeti";
+  }
+  if (normalized.includes("kat irtifaki")) {
+    return "kat_irtifaki";
+  }
+  if (normalized.includes("devre mulk")) {
+    return "devre_mulk";
+  }
+  return "other";
+}
+
+function deedScore(category) {
+  if (category === "mustakil") {
+    return 1;
+  }
+  if (category === "kat_mulkiyeti") {
+    return 0.85;
+  }
+  if (category === "kat_irtifaki") {
+    return 0.72;
+  }
+  if (category === "devre_mulk") {
+    return 0.45;
+  }
+  if (category === "hisseli") {
+    return 0.2;
+  }
+  if (category === "other") {
+    return 0.58;
+  }
+  return 0.55;
+}
+
+function deedSimilarity(targetCategory, compCategory) {
+  if (!targetCategory || !compCategory) {
+    return 0.55;
+  }
+  if (targetCategory === compCategory) {
+    return 1;
+  }
+  if (targetCategory === "unknown" || compCategory === "unknown") {
+    return 0.62;
+  }
+  if (targetCategory === "hisseli" || compCategory === "hisseli") {
+    return 0.32;
+  }
+  if (
+    (targetCategory === "mustakil" && compCategory === "kat_mulkiyeti") ||
+    (targetCategory === "kat_mulkiyeti" && compCategory === "mustakil")
+  ) {
+    return 0.62;
+  }
+  return 0.5;
+}
+
+function parseCreditCategory(text) {
+  const normalized = normalizeForMatch(text || "").replace(/-/g, " ");
+  if (!normalized) {
+    return "unknown";
+  }
+  if (normalized.includes("uygun degil") || normalized.includes("uygun değil") || normalized === "hayir") {
+    return "not_suitable";
+  }
+  if (normalized.includes("krediye uygun") || normalized === "uygun" || normalized === "evet") {
+    return "suitable";
+  }
+  return "unknown";
+}
+
+function creditScore(category) {
+  if (category === "suitable") {
+    return 1;
+  }
+  if (category === "not_suitable") {
+    return 0.2;
+  }
+  return 0.55;
+}
+
+function creditSimilarity(targetCategory, compCategory) {
+  if (!targetCategory || !compCategory) {
+    return 0.55;
+  }
+  if (targetCategory === compCategory) {
+    return 1;
+  }
+  if (targetCategory === "unknown" || compCategory === "unknown") {
+    return 0.62;
+  }
+  return 0.35;
+}
+
+function parseSiteCategory(text) {
+  const normalized = normalizeForMatch(text || "").replace(/-/g, " ");
+  if (!normalized) {
+    return "unknown";
+  }
+  if (normalized === "evet" || normalized.includes("site icerisinde evet")) {
+    return "yes";
+  }
+  if (normalized === "hayir" || normalized.includes("site icerisinde hayir")) {
+    return "no";
+  }
+  return "unknown";
+}
+
+function siteScore(category) {
+  if (category === "yes") {
+    return 1;
+  }
+  if (category === "no") {
+    return 0.45;
+  }
+  return 0.58;
+}
+
+function siteSimilarity(targetCategory, compCategory) {
+  if (!targetCategory || !compCategory) {
+    return 0.55;
+  }
+  if (targetCategory === compCategory) {
+    return 1;
+  }
+  if (targetCategory === "unknown" || compCategory === "unknown") {
+    return 0.62;
+  }
+  return 0.45;
+}
+
+function parseUsageCategory(text) {
+  const normalized = normalizeForMatch(text || "").replace(/-/g, " ");
+  if (!normalized) {
+    return "unknown";
+  }
+  if (normalized.includes("bos")) {
+    return "empty";
+  }
+  if (normalized.includes("kiraci")) {
+    return "tenant";
+  }
+  if (normalized.includes("mulk sahibi")) {
+    return "owner";
+  }
+  return "other";
+}
+
+function usageScore(category) {
+  if (category === "empty") {
+    return 1;
+  }
+  if (category === "owner") {
+    return 0.64;
+  }
+  if (category === "tenant") {
+    return 0.45;
+  }
+  if (category === "other") {
+    return 0.56;
+  }
+  return 0.58;
+}
+
+function usageSimilarity(targetCategory, compCategory) {
+  if (!targetCategory || !compCategory) {
+    return 0.55;
+  }
+  if (targetCategory === compCategory) {
+    return 1;
+  }
+  if (targetCategory === "unknown" || compCategory === "unknown") {
+    return 0.62;
+  }
+  if (targetCategory === "empty" || compCategory === "empty") {
+    return 0.5;
+  }
+  return 0.65;
+}
+
 function sizeDesirabilityScore(sqm) {
   if (!Number.isFinite(sqm) || sqm <= 0) {
     return 0.5;
@@ -341,10 +531,28 @@ function withPrecomputed(row) {
   const roomStats = parseRoomStats(row.roomCount || "");
   const buildingAgeYears = parseBuildingAgeYears(row.buildingAge || "");
   const floorCategory = parseFloorCategory(row.floorInfo || "");
+  const deedCategory = parseDeedCategory(row.deedStatus || "");
+  const creditCategory = parseCreditCategory(row.creditSuitability || "");
+  const siteCategory = parseSiteCategory(row.inSite || "");
+  const usageCategory = parseUsageCategory(row.usageStatus || "");
   const floorScore = floorDesirabilityScore(floorCategory);
   const sizeScore = sizeDesirabilityScore(sqm);
   const freshnessScore = newnessScore(buildingAgeYears);
-  const qualityScore = clamp(0.35 * sizeScore + 0.35 * freshnessScore + 0.3 * floorScore, 0, 1);
+  const tapuScore = deedScore(deedCategory);
+  const krediScore = creditScore(creditCategory);
+  const siteScoreValue = siteScore(siteCategory);
+  const usageScoreValue = usageScore(usageCategory);
+  const qualityScore = clamp(
+    0.2 * sizeScore +
+      0.16 * freshnessScore +
+      0.12 * floorScore +
+      0.2 * tapuScore +
+      0.14 * krediScore +
+      0.08 * siteScoreValue +
+      0.1 * usageScoreValue,
+    0,
+    1
+  );
 
   return {
     ...row,
@@ -355,9 +563,17 @@ function withPrecomputed(row) {
     _roomTotal: roomStats.total,
     _buildingAgeYears: buildingAgeYears,
     _floorCategory: floorCategory,
+    _deedCategory: deedCategory,
+    _creditCategory: creditCategory,
+    _siteCategory: siteCategory,
+    _usageCategory: usageCategory,
     _floorScore: floorScore,
     _sizeScore: sizeScore,
     _freshnessScore: freshnessScore,
+    _tapuScore: tapuScore,
+    _krediScore: krediScore,
+    _siteScore: siteScoreValue,
+    _usageScore: usageScoreValue,
     _qualityScore: qualityScore
   };
 }
@@ -372,8 +588,20 @@ function pickComparables(target, rows, minComps) {
     const sqmSim = sqmSimilarity(target._effectiveSqm, comp._effectiveSqm);
     const ageSim = ageSimilarity(target._buildingAgeYears, comp._buildingAgeYears);
     const floorSim = floorSimilarity(target._floorCategory, comp._floorCategory);
+    const deedSim = deedSimilarity(target._deedCategory, comp._deedCategory);
+    const creditSim = creditSimilarity(target._creditCategory, comp._creditCategory);
+    const siteSim = siteSimilarity(target._siteCategory, comp._siteCategory);
+    const usageSim = usageSimilarity(target._usageCategory, comp._usageCategory);
     const similarityScore = clamp(
-      0.34 * sqmSim + 0.24 * roomSim + 0.18 * neighborhoodSim + 0.14 * ageSim + 0.1 * floorSim,
+      0.26 * sqmSim +
+        0.2 * roomSim +
+        0.15 * neighborhoodSim +
+        0.11 * ageSim +
+        0.08 * floorSim +
+        0.08 * deedSim +
+        0.05 * creditSim +
+        0.04 * siteSim +
+        0.03 * usageSim,
       0,
       1
     );
@@ -393,6 +621,10 @@ function pickComparables(target, rows, minComps) {
       _sqmSim: sqmSim,
       _ageSim: ageSim,
       _floorSim: floorSim,
+      _deedSim: deedSim,
+      _creditSim: creditSim,
+      _siteSim: siteSim,
+      _usageSim: usageSim,
       _adjustedPricePerSqm: adjustedPricePerSqm
     });
   }
@@ -477,7 +709,7 @@ function scoreDeal(target, rows, opts) {
     1
   );
   const livabilityQuality = clamp(target._qualityScore, 0, 1);
-  const qualityMultiplier = 0.8 + livabilityQuality * 0.4;
+  const qualityMultiplier = 0.78 + livabilityQuality * 0.44;
   let score = discountPct * confidence * qualityMultiplier;
   const pricePerSqmGapPct = (compMedian - target._pricePerSqm) / compMedian;
 
@@ -503,6 +735,10 @@ function scoreDeal(target, rows, opts) {
     roomCount: target.roomCount,
     buildingAge: target.buildingAge,
     floorInfo: target.floorInfo,
+    deedStatus: target.deedStatus,
+    creditSuitability: target.creditSuitability,
+    inSite: target.inSite,
+    usageStatus: target.usageStatus,
     priceTl: target.priceTl,
     effectiveSqm: target._effectiveSqm,
     pricePerSqm: target._pricePerSqm,
@@ -534,9 +770,21 @@ function scoreDeal(target, rows, opts) {
       buildingAgeYears: target._buildingAgeYears,
       floorRaw: target.floorInfo || null,
       floorCategory: target._floorCategory,
+      deedStatusRaw: target.deedStatus || null,
+      deedCategory: target._deedCategory,
+      creditSuitabilityRaw: target.creditSuitability || null,
+      creditCategory: target._creditCategory,
+      inSiteRaw: target.inSite || null,
+      siteCategory: target._siteCategory,
+      usageStatusRaw: target.usageStatus || null,
+      usageCategory: target._usageCategory,
       sizeScore: target._sizeScore,
       freshnessScore: target._freshnessScore,
       floorScore: target._floorScore,
+      tapuScore: target._tapuScore,
+      krediScore: target._krediScore,
+      siteScore: target._siteScore,
+      usageScore: target._usageScore,
       livabilityQuality,
       listingPricePerSqm: target._pricePerSqm,
       comparableMedianPricePerSqm: compMedian,
@@ -583,6 +831,10 @@ export async function onRequestGet(context) {
         room_count AS roomCount,
         building_age AS buildingAge,
         floor_info AS floorInfo,
+        deed_status AS deedStatus,
+        credit_suitability AS creditSuitability,
+        in_site AS inSite,
+        usage_status AS usageStatus,
         price_tl AS priceTl,
         gross_sqm AS grossSqm,
         net_sqm AS netSqm,
@@ -632,13 +884,17 @@ export async function onRequestGet(context) {
     ok: true,
     area: { city: areaCity, district: areaDistrict },
     model: {
-      version: "v2-multifactor",
+      version: "v3-legal-usage-signals",
       factors: [
         "m2 benzerliği",
         "oda benzerliği",
         "mahalle benzerliği",
         "bina yaşı",
         "kat tercihi",
+        "tapu durumu",
+        "krediye uygunluk",
+        "site içerisinde",
+        "kullanım durumu",
         "emsal benzerlik güveni",
         "Endeksa karşılaştırması"
       ]

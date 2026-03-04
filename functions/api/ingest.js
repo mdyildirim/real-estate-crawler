@@ -33,6 +33,10 @@ function normalizeListing(row) {
     roomCount: row?.roomCount || "",
     buildingAge: row?.buildingAge || "",
     floorInfo: row?.floorInfo || "",
+    deedStatus: row?.deedStatus || "",
+    creditSuitability: row?.creditSuitability || "",
+    inSite: row?.inSite || "",
+    usageStatus: row?.usageStatus || "",
     priceTl: toNullableNumber(row?.priceTl),
     grossSqm: toNullableNumber(row?.grossSqm),
     netSqm: toNullableNumber(row?.netSqm),
@@ -288,10 +292,11 @@ export async function onRequestPost(context) {
         `
           INSERT INTO listings_current (
             source, listing_key, listing_id, url, title, address,
-            neighborhood, room_count, building_age, floor_info, price_tl, gross_sqm, net_sqm,
+            neighborhood, room_count, building_age, floor_info, deed_status, credit_suitability, in_site, usage_status,
+            price_tl, gross_sqm, net_sqm,
             avg_price_for_sale, endeksa_min_price, endeksa_max_price,
             area_city, area_district, first_seen_at, last_seen_at, last_seen_run_id, last_crawled_at, is_active
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
           ON CONFLICT(source, listing_key) DO UPDATE SET
             listing_id = excluded.listing_id,
             url = excluded.url,
@@ -301,6 +306,10 @@ export async function onRequestPost(context) {
             room_count = excluded.room_count,
             building_age = excluded.building_age,
             floor_info = excluded.floor_info,
+            deed_status = excluded.deed_status,
+            credit_suitability = excluded.credit_suitability,
+            in_site = excluded.in_site,
+            usage_status = excluded.usage_status,
             price_tl = excluded.price_tl,
             gross_sqm = excluded.gross_sqm,
             net_sqm = excluded.net_sqm,
@@ -325,6 +334,10 @@ export async function onRequestPost(context) {
         listing.roomCount,
         listing.buildingAge,
         listing.floorInfo,
+        listing.deedStatus,
+        listing.creditSuitability,
+        listing.inSite,
+        listing.usageStatus,
         listing.priceTl,
         listing.grossSqm,
         listing.netSqm,
@@ -357,9 +370,10 @@ export async function onRequestPost(context) {
         `
           INSERT INTO listing_snapshots (
             run_id, source, listing_key, listing_id, url, title, address,
-            neighborhood, room_count, building_age, floor_info, price_tl, gross_sqm, net_sqm,
+            neighborhood, room_count, building_age, floor_info, deed_status, credit_suitability, in_site, usage_status,
+            price_tl, gross_sqm, net_sqm,
             avg_price_for_sale, endeksa_min_price, endeksa_max_price, crawled_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(run_id, source, listing_key) DO UPDATE SET
             listing_id = excluded.listing_id,
             url = excluded.url,
@@ -369,6 +383,10 @@ export async function onRequestPost(context) {
             room_count = excluded.room_count,
             building_age = excluded.building_age,
             floor_info = excluded.floor_info,
+            deed_status = excluded.deed_status,
+            credit_suitability = excluded.credit_suitability,
+            in_site = excluded.in_site,
+            usage_status = excluded.usage_status,
             price_tl = excluded.price_tl,
             gross_sqm = excluded.gross_sqm,
             net_sqm = excluded.net_sqm,
@@ -389,6 +407,10 @@ export async function onRequestPost(context) {
         listing.roomCount,
         listing.buildingAge,
         listing.floorInfo,
+        listing.deedStatus,
+        listing.creditSuitability,
+        listing.inSite,
+        listing.usageStatus,
         listing.priceTl,
         listing.grossSqm,
         listing.netSqm,

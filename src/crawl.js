@@ -349,6 +349,10 @@ async function crawlEmlakjet(ctx) {
           roomCount: detail.roomCount || "",
           buildingAge: detail.buildingAge || "",
           floorInfo: detail.floorInfo || "",
+          deedStatus: detail.deedStatus || "",
+          creditSuitability: detail.creditSuitability || "",
+          inSite: detail.inSite || "",
+          usageStatus: detail.usageStatus || "",
           priceTl: detail.priceTl,
           grossSqm: detail.grossSqm,
           netSqm: detail.netSqm,
@@ -664,12 +668,61 @@ function parseEmlakjetListingDetail(html, area) {
       /"ilan_kat"\s*:\s*\{"definition"\s*:\s*"([^"]+)"/i,
       /"key":"ilan_kat","value":\{"definition":"([^"]+)"/i
     ]) || "";
+  const deedStatus = normalizeFeatureValue(
+    extractFirstRegexGroup(html, [
+      /"ilan_tapu"\s*:\s*\{"definition"\s*:\s*"([^"]+)"/i,
+      /"key":"ilan_tapu","value":\{"definition":"([^"]+)"/i,
+      /"ilan_tapu_durumu"\s*:\s*\{"definition"\s*:\s*"([^"]+)"/i,
+      /"key":"ilan_tapu_durumu","value":\{"definition":"([^"]+)"/i,
+      /"key":"deed_status","name":"Tapu Durumu","value":"([^"]+)"/i,
+      /"key":"deed_status"[^}]{0,220}"value":"([^"]+)"/i,
+      /Tapu Durumu<\/span><span[^>]*>([^<]+)<\/span>/i
+    ])
+  );
+  const creditSuitability = normalizeFeatureValue(
+    extractFirstRegexGroup(html, [
+      /"ilan_krediye_uygun"\s*:\s*\{"definition"\s*:\s*"([^"]+)"/i,
+      /"key":"ilan_krediye_uygun","value":\{"definition":"([^"]+)"/i,
+      /"key":"suitability_for_credit","name":"Krediye Uygunluk","value":"([^"]+)"/i,
+      /"key":"suitability_for_credit"[^}]{0,220}"value":"([^"]+)"/i,
+      /Krediye Uygunluk<\/span><span[^>]*>([^<]+)<\/span>/i
+    ])
+  );
+  const inSite = normalizeFeatureValue(
+    extractFirstRegexGroup(html, [
+      /"ilan_site_icerisinde"\s*:\s*\{"definition"\s*:\s*"([^"]+)"/i,
+      /"key":"ilan_site_icerisinde","value":\{"definition":"([^"]+)"/i,
+      /"key":"in_site","name":"Site İçerisinde","value":"([^"]+)"/i,
+      /"key":"in_site"[^}]{0,220}"value":"([^"]+)"/i,
+      /Site İçerisinde<\/span><span[^>]*>([^<]+)<\/span>/i
+    ])
+  );
+  const usageStatus = normalizeFeatureValue(
+    extractFirstRegexGroup(html, [
+      /"ilan_kullanim"\s*:\s*\{"definition"\s*:\s*"([^"]+)"/i,
+      /"key":"ilan_kullanim","value":\{"definition":"([^"]+)"/i,
+      /"key":"usability","name":"Kullanım Durumu","value":"([^"]+)"/i,
+      /"key":"usability"[^}]{0,220}"value":"([^"]+)"/i,
+      /Kullanım Durumu<\/span><span[^>]*>([^<]+)<\/span>/i
+    ])
+  );
   const avgPriceForSale = parseLooseNumber(extractRegexGroup(html, /"averagePriceForSale"\s*:\s*([0-9.]+)/i));
   const endeksaMinPrice = parseLooseNumber(extractRegexGroup(html, /"endeksaValuation"\s*:\s*\{"minPrice"\s*:\s*([0-9.]+)/i));
   const endeksaMaxPrice = parseLooseNumber(extractRegexGroup(html, /"endeksaValuation"\s*:\s*\{[^}]*"maxPrice"\s*:\s*([0-9.]+)/i));
 
-  const featureCount = [priceTl, grossSqm, netSqm, roomCount, buildingAge, floorInfo, avgPriceForSale].filter(Boolean)
-    .length;
+  const featureCount = [
+    priceTl,
+    grossSqm,
+    netSqm,
+    roomCount,
+    buildingAge,
+    floorInfo,
+    deedStatus,
+    creditSuitability,
+    inSite,
+    usageStatus,
+    avgPriceForSale
+  ].filter(Boolean).length;
 
   return {
     _featureCount: featureCount,
@@ -679,6 +732,10 @@ function parseEmlakjetListingDetail(html, area) {
     roomCount,
     buildingAge,
     floorInfo,
+    deedStatus,
+    creditSuitability,
+    inSite,
+    usageStatus,
     priceTl,
     grossSqm,
     netSqm,
@@ -717,6 +774,10 @@ function createListing(source, listingId, url, extra) {
     roomCount: extra.roomCount || "",
     buildingAge: extra.buildingAge || "",
     floorInfo: extra.floorInfo || "",
+    deedStatus: extra.deedStatus || "",
+    creditSuitability: extra.creditSuitability || "",
+    inSite: extra.inSite || "",
+    usageStatus: extra.usageStatus || "",
     priceTl: toNullableNumber(extra.priceTl),
     grossSqm: toNullableNumber(extra.grossSqm),
     netSqm: toNullableNumber(extra.netSqm),
@@ -846,6 +907,45 @@ function parseSqmValue(text) {
   return parseLooseNumber(match[1]);
 }
 
+function normalizeFeatureValue(text) {
+  const raw = decodeHtml(String(text || ""))
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!raw || /^(undefined|null|yok)$/i.test(raw)) {
+    return "";
+  }
+
+  const normalized = normalizeForMatch(raw.replace(/-/g, " "));
+  const aliases = {
+    evet: "Evet",
+    hayir: "Hayır",
+    bos: "Boş",
+    "kiraci oturuyor": "Kiracı Oturuyor",
+    "mulk sahibi oturuyor": "Mülk Sahibi Oturuyor",
+    "krediye uygun": "Krediye Uygun",
+    "krediye uygun degil": "Krediye Uygun Değil",
+    "kat mulkiyeti": "Kat Mülkiyeti",
+    "kat irtifaki": "Kat İrtifakı",
+    mustakil: "Müstakil",
+    "mustakil tapu": "Müstakil Tapu",
+    hisseli: "Hisseli",
+    "hisseli tapu": "Hisseli Tapu"
+  };
+  if (aliases[normalized]) {
+    return aliases[normalized];
+  }
+
+  if (raw.includes("-") && !raw.includes(" ")) {
+    return raw
+      .split("-")
+      .filter(Boolean)
+      .map((part) => part[0].toLocaleUpperCase("tr-TR") + part.slice(1))
+      .join(" ");
+  }
+
+  return raw;
+}
+
 function firstFiniteNumber(values) {
   for (const value of values) {
     if (Number.isFinite(value)) {
@@ -971,6 +1071,10 @@ function toCsv(rows) {
     "roomCount",
     "buildingAge",
     "floorInfo",
+    "deedStatus",
+    "creditSuitability",
+    "inSite",
+    "usageStatus",
     "priceTl",
     "grossSqm",
     "netSqm",
