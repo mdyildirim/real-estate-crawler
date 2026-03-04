@@ -560,6 +560,25 @@
           const creditSuitabilityRaw = reason.creditSuitabilityRaw ? escHtml(reason.creditSuitabilityRaw) : "-";
           const inSiteRaw = reason.inSiteRaw ? escHtml(reason.inSiteRaw) : "-";
           const usageStatusRaw = reason.usageStatusRaw ? escHtml(reason.usageStatusRaw) : "-";
+          const comparables = Array.isArray(reason.topComparables)
+            ? reason.topComparables
+            : Array.isArray(d.topComparables)
+              ? d.topComparables
+              : [];
+          const comparableLines = comparables
+            .slice(0, 3)
+            .map((c, idx) => {
+              const cTitle = escHtml(c.title || `Emsal ${idx + 1}`);
+              const cUrl = escHtml(c.url || "");
+              const cPrice = fmtMoney(c.priceTl);
+              const cSqm = fmtInt(c.effectiveSqm);
+              const cPsm = fmtMoney(c.pricePerSqm);
+              const cRoom = escHtml(c.roomCount || "-");
+              const cNeighborhood = escHtml(c.neighborhood || "-");
+              const cSimilarity = fmtPct(c.similarity);
+              return `<div class="reason-line">Emsal ${idx + 1}: <a href="${cUrl}" target="_blank" rel="noopener noreferrer">${cTitle}</a> | ${cPrice} | ${cSqm} m² | m²:${cPsm} | Oda:${cRoom} | Mahalle:${cNeighborhood} | Benzerlik:${cSimilarity}</div>`;
+            })
+            .join("");
 
           const item = document.createElement("div");
           item.className = "deal";
@@ -585,11 +604,13 @@
               <div class="reason-line">Güven skoru: ${fmtPct(confidence)} | Dağılım: ${fmtPct(dispersionRatio)} | Benzerlik ort.: ${fmtPct(avgSimilarity)}</div>
               <div class="reason-line">Kalite çarpanı: ${qualityMultiplier == null ? "-" : qualityMultiplier.toFixed(2)} | Boyut:${fmtPct(sizeScore)} Yaş:${fmtPct(freshnessScore)} Kat:${fmtPct(floorScore)}</div>
               <div class="reason-line">Hukuk/yaşam etkisi: Tapu:${fmtPct(tapuScore)} Kredi:${fmtPct(krediScore)} Site:${fmtPct(siteScore)} Kullanım:${fmtPct(usageScore)} Toplam kalite:${fmtPct(livabilityQuality)}</div>
-              <div class="reason-line">Endeksa farkı: ${
+              <div class="reason-line">Endeksa farkı (Endeksa orta fiyatına göre): ${
                 Number.isFinite(endeksaGap)
                   ? `${fmtPct(endeksaGap)}`
                   : "veri yok"
               }</div>
+              <div class="reason-title" style="margin-top:0.45rem">Kontrol için 3 emsal ilan</div>
+              ${comparableLines || '<div class="reason-line">Emsal bulunamadı.</div>'}
             </div>
             <div><a href="${safeUrl}" target="_blank" rel="noopener noreferrer">İlanı aç</a></div>
           `;

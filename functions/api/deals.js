@@ -723,6 +723,26 @@ function scoreDeal(target, rows, opts) {
   if (Number.isFinite(discountVsEndeksa) && discountVsEndeksa > 0) {
     score *= 1 + clamp(discountVsEndeksa, 0, 0.2) * 0.35;
   }
+  const topComparables = comps.slice(0, 3).map((row) => ({
+    source: row.source,
+    listingKey: row.listingKey,
+    listingId: row.listingId,
+    url: row.url,
+    title: row.title,
+    neighborhood: row.neighborhood,
+    roomCount: row.roomCount,
+    buildingAge: row.buildingAge,
+    floorInfo: row.floorInfo,
+    deedStatus: row.deedStatus || null,
+    creditSuitability: row.creditSuitability || null,
+    inSite: row.inSite || null,
+    usageStatus: row.usageStatus || null,
+    priceTl: row.priceTl,
+    effectiveSqm: row._effectiveSqm,
+    pricePerSqm: row._pricePerSqm,
+    similarity: row._similarity,
+    adjustedPricePerSqm: row._adjustedPricePerSqm
+  }));
 
   return {
     source: target.source,
@@ -757,6 +777,7 @@ function scoreDeal(target, rows, opts) {
     endeksaMinPrice: target.endeksaMinPrice || null,
     endeksaMaxPrice: target.endeksaMaxPrice || null,
     discountVsEndeksa,
+    topComparables,
     lastSeenAt: target.lastSeenAt,
     reasoning: {
       method: picked.bucket,
@@ -799,7 +820,8 @@ function scoreDeal(target, rows, opts) {
       blendedWithAvgPriceForSale: Number.isFinite(target.avgPriceForSale) && target.avgPriceForSale > 0,
       avgPriceForSale: target.avgPriceForSale || null,
       endeksaMidPrice,
-      discountVsEndeksa
+      discountVsEndeksa,
+      topComparables
     }
   };
 }
