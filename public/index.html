@@ -534,6 +534,7 @@
           const methodLabel = escHtml(reason.methodLabel || d.comparableBucket || "-");
           const sqmTypeLabel = reason.usedSqmType === "net" ? "Net m²" : "Brüt m²";
           const compCount = finiteOr(reason.comparableCount, d.comparableCount);
+          const sameNeighborhoodCompCount = finiteOr(reason.sameNeighborhoodComparableCount);
           const effectiveSqm = finiteOr(reason.effectiveSqm, d.effectiveSqm);
           const listingPsm = finiteOr(reason.listingPricePerSqm, d.pricePerSqm);
           const compMedianPsm = finiteOr(reason.comparableMedianPricePerSqm, d.fairPricePerSqm);
@@ -565,6 +566,10 @@
             : Array.isArray(d.topComparables)
               ? d.topComparables
               : [];
+          const fallbackComparableCount =
+            Number.isFinite(compCount) && Number.isFinite(sameNeighborhoodCompCount)
+              ? Math.max(0, compCount - sameNeighborhoodCompCount)
+              : null;
           const comparableLines = comparables
             .slice(0, 3)
             .map((c, idx) => {
@@ -576,7 +581,8 @@
               const cRoom = escHtml(c.roomCount || "-");
               const cNeighborhood = escHtml(c.neighborhood || "-");
               const cSimilarity = fmtPct(c.similarity);
-              return `<div class="reason-line">Emsal ${idx + 1}: <a href="${cUrl}" target="_blank" rel="noopener noreferrer">${cTitle}</a> | ${cPrice} | ${cSqm} m² | m²:${cPsm} | Oda:${cRoom} | Mahalle:${cNeighborhood} | Benzerlik:${cSimilarity}</div>`;
+              const cNeighborhoodFlag = c.sameNeighborhood === false ? " | Farklı mahalle" : "";
+              return `<div class="reason-line">Emsal ${idx + 1}: <a href="${cUrl}" target="_blank" rel="noopener noreferrer">${cTitle}</a> | ${cPrice} | ${cSqm} m² | m²:${cPsm} | Oda:${cRoom} | Mahalle:${cNeighborhood} | Benzerlik:${cSimilarity}${cNeighborhoodFlag}</div>`;
             })
             .join("");
 
@@ -609,6 +615,11 @@
                   ? `${fmtPct(endeksaGap)}`
                   : "veri yok"
               }</div>
+              ${
+                Number.isFinite(fallbackComparableCount) && fallbackComparableCount > 0
+                  ? `<div class="reason-line">Not: Aynı mahallede yeterli emsal olmadığı için ${fmtInt(fallbackComparableCount)} ilan yakın mahallelerden alındı.</div>`
+                  : ""
+              }
               <div class="reason-title" style="margin-top:0.45rem">Kontrol için 3 emsal ilan</div>
               ${comparableLines || '<div class="reason-line">Emsal bulunamadı.</div>'}
             </div>

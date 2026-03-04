@@ -32,6 +32,9 @@ function bucketLabel(bucket) {
   if (bucket === "neighborhood+room") {
     return "Mahalle + oda sayısı";
   }
+  if (bucket === "neighborhood+multifactor") {
+    return "Mahalle + çok faktörlü benzerlik";
+  }
   if (bucket === "district+room") {
     return "İlçe + oda sayısı";
   }
@@ -215,6 +218,52 @@ function floorSimilarity(targetCategory, compCategory) {
     return 0.5;
   }
   return 0.35;
+}
+
+function parseAssetClass(titleText) {
+  const normalized = normalizeForMatch(titleText || "").replace(/-/g, " ");
+  if (!normalized) {
+    return "unknown";
+  }
+  if (normalized.includes("prefabrik")) {
+    return "prefabrik";
+  }
+  if (normalized.includes("residence")) {
+    return "residence";
+  }
+  if (normalized.includes("villa")) {
+    return "villa";
+  }
+  if (normalized.includes("mustakil")) {
+    return "mustakil";
+  }
+  if (normalized.includes("daire") || normalized.includes("apartman")) {
+    return "daire";
+  }
+  if (normalized.includes("ofis") || normalized.includes("isyeri")) {
+    return "ofis";
+  }
+  return "unknown";
+}
+
+function isApartmentLikeAsset(assetClass) {
+  return assetClass === "daire" || assetClass === "residence";
+}
+
+function assetClassSimilarity(targetClass, compClass) {
+  if (!targetClass || !compClass) {
+    return 0.55;
+  }
+  if (targetClass === compClass) {
+    return 1;
+  }
+  if (targetClass === "unknown" || compClass === "unknown") {
+    return 0.62;
+  }
+  if (isApartmentLikeAsset(targetClass) && isApartmentLikeAsset(compClass)) {
+    return 0.72;
+  }
+  return 0.25;
 }
 
 function parseDeedCategory(deedText) {
@@ -531,6 +580,7 @@ function withPrecomputed(row) {
   const roomStats = parseRoomStats(row.roomCount || "");
   const buildingAgeYears = parseBuildingAgeYears(row.buildingAge || "");
   const floorCategory = parseFloorCategory(row.floorInfo || "");
+  const assetClass = parseAssetClass(row.title || "");
   const deedCategory = parseDeedCategory(row.deedStatus || "");
   const creditCategory = parseCreditCategory(row.creditSuitability || "");
   const siteCategory = parseSiteCategory(row.inSite || "");
@@ -563,6 +613,7 @@ function withPrecomputed(row) {
     _roomTotal: roomStats.total,
     _buildingAgeYears: buildingAgeYears,
     _floorCategory: floorCategory,
+    _assetClass: assetClass,
     _deedCategory: deedCategory,
     _creditCategory: creditCategory,
     _siteCategory: siteCategory,
@@ -583,25 +634,44 @@ function pickComparables(target, rows, minComps) {
   const scored = [];
 
   for (const comp of candidates) {
+    if (
+      target._assetClass !== "unknown" &&
+      comp._assetClass !== "unknown" &&
+      target._assetClass !== comp._assetClass &&
+      !(isApartmentLikeAsset(target._assetClass) && isApartmentLikeAsset(comp._assetClass))
+    ) {
+      continue;
+    }
+
     const roomSim = roomSimilarity(target, comp);
     const neighborhoodSim = neighborhoodSimilarity(target, comp);
     const sqmSim = sqmSimilarity(target._effectiveSqm, comp._effectiveSqm);
     const ageSim = ageSimilarity(target._buildingAgeYears, comp._buildingAgeYears);
     const floorSim = floorSimilarity(target._floorCategory, comp._floorCategory);
+    const assetSim = assetClassSimilarity(target._assetClass, comp._assetClass);
     const deedSim = deedSimilarity(target._deedCategory, comp._deedCategory);
     const creditSim = creditSimilarity(target._creditCategory, comp._creditCategory);
     const siteSim = siteSimilarity(target._siteCategory, comp._siteCategory);
     const usageSim = usageSimilarity(target._usageCategory, comp._usageCategory);
+
+    if (Number.isFinite(target._effectiveSqm) && Number.isFinite(comp._effectiveSqm) && target._effectiveSqm > 0 && comp._effectiveSqm > 0) {
+      const sqmRatio = Math.min(target._effectiveSqm, comp._effectiveSqm) / Math.max(target._effectiveSqm, comp._effectiveSqm);
+      if (sqmRatio < 0.55) {
+        continue;
+      }
+    }
+
     const similarityScore = clamp(
-      0.26 * sqmSim +
+      0.2 * sqmSim +
         0.2 * roomSim +
-        0.15 * neighborhoodSim +
-        0.11 * ageSim +
-        0.08 * floorSim +
-        0.08 * deedSim +
-        0.05 * creditSim +
-        0.04 * siteSim +
-        0.03 * usageSim,
+        0.2 * neighborhoodSim +
+        0.1 * ageSim +
+        0.07 * floorSim +
+        0.07 * assetSim +
+        0.07 * deedSim +
+        0.04 * creditSim +
+        0.03 * siteSim +
+        0.02 * usageSim,
       0,
       1
     );
@@ -621,6 +691,7 @@ function pickComparables(target, rows, minComps) {
       _sqmSim: sqmSim,
       _ageSim: ageSim,
       _floorSim: floorSim,
+      _assetSim: assetSim,
       _deedSim: deedSim,
       _creditSim: creditSim,
       _siteSim: siteSim,
@@ -630,7 +701,17 @@ function pickComparables(target, rows, minComps) {
   }
 
   scored.sort((a, b) => b._similarity - a._similarity);
-  const picked = scored.slice(0, Math.min(80, scored.length));
+  const sameNeighborhood = scored.filter(
+    (row) =>
+      target._normNeighborhood &&
+      row._normNeighborhood &&
+      row._normNeighborhood === target._normNeighborhood
+  );
+  const minNeighborhoodComps = Math.max(minComps, 4);
+  const neighborhoodFocused = sameNeighborhood.length >= minNeighborhoodComps;
+  const picked = neighborhoodFocused
+    ? sameNeighborhood.slice(0, Math.min(80, sameNeighborhood.length))
+    : scored.slice(0, Math.min(80, scored.length));
 
   let neighborhoodRoomMatches = 0;
   let roomMatches = 0;
@@ -649,16 +730,23 @@ function pickComparables(target, rows, minComps) {
   const neighborhoodRoomRatio = neighborhoodRoomMatches / pickedCount;
   const roomRatio = roomMatches / pickedCount;
 
-  let bucket = "district+multifactor";
-  if (neighborhoodRoomRatio >= 0.5) {
+  let bucket = neighborhoodFocused ? "neighborhood+multifactor" : "district+multifactor";
+  if (neighborhoodFocused && roomRatio >= 0.5) {
     bucket = "neighborhood+room";
-  } else if (roomRatio >= 0.5) {
+  } else if (!neighborhoodFocused && neighborhoodRoomRatio >= 0.5) {
+    bucket = "neighborhood+room";
+  } else if (!neighborhoodFocused && roomRatio >= 0.5) {
     bucket = "district+room";
   } else if (picked.length < minComps) {
     bucket = "district+sqm";
   }
 
-  return { bucket, comps: picked };
+  return {
+    bucket,
+    comps: picked,
+    neighborhoodFocused,
+    sameNeighborhoodComparableCount: sameNeighborhood.length
+  };
 }
 
 function scoreDeal(target, rows, opts) {
@@ -723,7 +811,22 @@ function scoreDeal(target, rows, opts) {
   if (Number.isFinite(discountVsEndeksa) && discountVsEndeksa > 0) {
     score *= 1 + clamp(discountVsEndeksa, 0, 0.2) * 0.35;
   }
-  const topComparables = comps.slice(0, 3).map((row) => ({
+  const sameNeighborhoodComparables = comps.filter(
+    (row) =>
+      target._normNeighborhood &&
+      row._normNeighborhood &&
+      row._normNeighborhood === target._normNeighborhood
+  );
+  const fallbackComparables = comps.filter(
+    (row) =>
+      !(
+        target._normNeighborhood &&
+        row._normNeighborhood &&
+        row._normNeighborhood === target._normNeighborhood
+      )
+  );
+  const topComparableRows = [...sameNeighborhoodComparables, ...fallbackComparables].slice(0, 3);
+  const topComparables = topComparableRows.map((row) => ({
     source: row.source,
     listingKey: row.listingKey,
     listingId: row.listingId,
@@ -741,7 +844,11 @@ function scoreDeal(target, rows, opts) {
     effectiveSqm: row._effectiveSqm,
     pricePerSqm: row._pricePerSqm,
     similarity: row._similarity,
-    adjustedPricePerSqm: row._adjustedPricePerSqm
+    adjustedPricePerSqm: row._adjustedPricePerSqm,
+    sameNeighborhood:
+      Boolean(target._normNeighborhood) &&
+      Boolean(row._normNeighborhood) &&
+      row._normNeighborhood === target._normNeighborhood
   }));
 
   return {
@@ -783,6 +890,8 @@ function scoreDeal(target, rows, opts) {
       method: picked.bucket,
       methodLabel: bucketLabel(picked.bucket),
       comparableCount: comps.length,
+      neighborhoodFocused: Boolean(picked.neighborhoodFocused),
+      sameNeighborhoodComparableCount: picked.sameNeighborhoodComparableCount || 0,
       effectiveSqm: target._effectiveSqm,
       usedSqmType: Number.isFinite(target.netSqm) && target.netSqm > 0 ? "net" : "gross",
       roomCount: target.roomCount || null,
