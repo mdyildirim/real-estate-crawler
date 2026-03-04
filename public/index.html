@@ -3,21 +3,24 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Emlak Tarama Paneli</title>
+    <title>Emlak Fırsat Ekranı</title>
     <style>
-      @import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&display=swap");
+      @import url("https://fonts.googleapis.com/css2?family=Nunito:wght@500;700;800&display=swap");
 
       :root {
-        color-scheme: light;
-        --bg: #f3f6fb;
+        --bg: #f5f7fb;
         --card: #ffffff;
-        --line: #d8e0eb;
-        --text: #10223a;
-        --muted: #5e6f88;
-        --primary: #1f6feb;
-        --primary-dark: #1b5fcc;
-        --ok-bg: #ecfdf3;
-        --ok-text: #12613b;
+        --line: #d9e1ee;
+        --text: #0f1f36;
+        --muted: #5f7290;
+        --blue: #1f78ff;
+        --blue-dark: #1165e8;
+        --ok-bg: #ecfff4;
+        --ok-line: #bdeed0;
+        --ok-text: #17643d;
+        --bad-bg: #fff1f4;
+        --bad-line: #ffd0d9;
+        --bad-text: #a2143a;
       }
 
       * {
@@ -26,24 +29,26 @@
 
       body {
         margin: 0;
-        font-family: "Manrope", "Segoe UI", sans-serif;
-        background: var(--bg);
+        font-family: "Nunito", "Segoe UI", sans-serif;
+        background: linear-gradient(180deg, #f9fbff 0%, var(--bg) 100%);
         color: var(--text);
       }
 
       main {
-        max-width: 980px;
+        max-width: 860px;
         margin: 0 auto;
-        padding: 1.2rem 1rem 2rem;
+        padding: 1rem;
+        display: grid;
+        gap: 1rem;
       }
 
       h1 {
         margin: 0;
-        font-size: 1.75rem;
+        font-size: 1.8rem;
       }
 
       p {
-        margin: 0.35rem 0 0;
+        margin: 0.4rem 0 0;
       }
 
       .muted {
@@ -53,65 +58,47 @@
       .card {
         background: var(--card);
         border: 1px solid var(--line);
-        border-radius: 14px;
+        border-radius: 16px;
         padding: 1rem;
       }
 
-      .stack {
+      .grid {
         display: grid;
-        gap: 1rem;
-      }
-
-      .row {
-        display: grid;
-        grid-template-columns: 1fr;
         gap: 0.8rem;
       }
 
       @media (min-width: 760px) {
-        .row.cols-3 {
-          grid-template-columns: repeat(3, 1fr);
-        }
-        .row.cols-2 {
-          grid-template-columns: repeat(2, 1fr);
+        .grid.two {
+          grid-template-columns: 1fr 1fr;
         }
       }
 
       label {
         display: block;
         margin-bottom: 0.35rem;
-        font-weight: 700;
+        font-size: 1.05rem;
+        font-weight: 800;
       }
 
       select,
-      input,
       button {
         width: 100%;
+        border-radius: 12px;
+        padding: 0.78rem 0.8rem;
+        font-size: 1.05rem;
         border: 1px solid var(--line);
-        border-radius: 10px;
-        padding: 0.68rem 0.75rem;
-        font-size: 1rem;
       }
 
       button {
         border: none;
-        cursor: pointer;
-        font-weight: 800;
-        background: var(--primary);
+        background: var(--blue);
         color: #fff;
+        font-weight: 800;
+        cursor: pointer;
       }
 
       button:hover {
-        background: var(--primary-dark);
-      }
-
-      button.secondary {
-        background: #e8eef7;
-        color: #1f3a5a;
-      }
-
-      button.secondary:hover {
-        background: #dde7f5;
+        background: var(--blue-dark);
       }
 
       button:disabled {
@@ -119,32 +106,28 @@
         cursor: not-allowed;
       }
 
-      .cta {
-        display: grid;
-        gap: 0.65rem;
-      }
-
-      @media (min-width: 760px) {
-        .cta {
-          grid-template-columns: 2fr 1fr;
-        }
-      }
-
-      .status {
-        background: var(--ok-bg);
-        color: var(--ok-text);
-        border: 1px solid #cdeedb;
-        border-radius: 10px;
-        padding: 0.75rem;
-        font-weight: 700;
-        min-height: 54px;
+      .hint {
+        border-radius: 12px;
+        padding: 0.8rem;
+        font-weight: 800;
         white-space: pre-wrap;
+      }
+
+      .hint.ok {
+        background: var(--ok-bg);
+        border: 1px solid var(--ok-line);
+        color: var(--ok-text);
+      }
+
+      .hint.bad {
+        background: var(--bad-bg);
+        border: 1px solid var(--bad-line);
+        color: var(--bad-text);
       }
 
       .stats {
         display: grid;
-        gap: 0.8rem;
-        grid-template-columns: 1fr;
+        gap: 0.7rem;
       }
 
       @media (min-width: 760px) {
@@ -153,190 +136,134 @@
         }
       }
 
-      .stat-box {
+      .stat {
+        background: #f8fbff;
         border: 1px solid var(--line);
         border-radius: 12px;
-        padding: 0.8rem;
+        padding: 0.7rem;
+      }
+
+      .stat .k {
+        color: var(--muted);
+        font-size: 0.92rem;
+        font-weight: 700;
+      }
+
+      .stat .v {
+        margin-top: 0.2rem;
+        font-size: 1.45rem;
+        font-weight: 800;
+      }
+
+      .deal-list {
+        display: grid;
+        gap: 0.7rem;
+      }
+
+      .deal {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 0.75rem;
+        display: grid;
+        gap: 0.35rem;
         background: #fff;
       }
 
-      .stat-label {
-        color: var(--muted);
-        font-size: 0.88rem;
-        font-weight: 700;
+      .deal strong {
+        font-size: 1.05rem;
       }
 
-      .stat-value {
-        margin-top: 0.2rem;
-        font-size: 1.28rem;
-        font-weight: 800;
-      }
-
-      table {
-        width: 100%;
-        border-collapse: collapse;
+      .deal .line {
+        color: #274164;
         font-size: 0.95rem;
       }
 
-      th,
-      td {
-        text-align: left;
-        border-bottom: 1px solid #e5ebf3;
-        padding: 0.58rem 0.45rem;
-        vertical-align: top;
-      }
-
-      th {
-        color: #425a77;
+      .deal a {
+        color: var(--blue);
+        text-decoration: none;
         font-weight: 800;
       }
 
-      a.listing-link {
-        color: var(--primary);
-        text-decoration: none;
-        font-weight: 700;
-      }
-
-      a.listing-link:hover {
+      .deal a:hover {
         text-decoration: underline;
       }
 
+      .empty {
+        color: var(--muted);
+        border: 1px dashed var(--line);
+        border-radius: 12px;
+        padding: 0.8rem;
+        background: #fcfdff;
+      }
+
       .tiny {
-        font-size: 0.85rem;
-      }
-
-      details {
-        margin-top: 0.3rem;
-      }
-
-      summary {
-        cursor: pointer;
-        color: #425a77;
-        font-weight: 700;
+        font-size: 0.9rem;
       }
     </style>
   </head>
   <body>
-    <main class="stack">
+    <main>
       <section>
-        <h1>Emlak Tarama ve Fırsat Bulucu</h1>
-        <p class="muted">3 adım: Bölgeyi seç, taramayı başlat, en iyi fırsatları gör.</p>
+        <h1>Emlakta Uygun Fiyat Bul</h1>
+        <p class="muted">Bölgeyi seçin, tek tuşla tarayın. Sonuçlar ekrana otomatik gelir.</p>
       </section>
 
-      <section class="card stack">
-        <div class="row cols-2">
+      <section class="card grid">
+        <div class="grid two">
           <div>
-            <label for="city">1) İl</label>
+            <label for="city">İl seç</label>
             <select id="city"></select>
           </div>
           <div>
-            <label for="district">2) İlçe</label>
+            <label for="district">İlçe seç</label>
             <select id="district"></select>
           </div>
         </div>
 
-        <div class="cta">
-          <button id="startScan">3) Taramayı Başlat</button>
-          <button id="refreshData" class="secondary">Sonuçları Yenile</button>
-        </div>
-
-        <div id="status" class="status">Hazır.</div>
-
-        <details>
-          <summary>Gelişmiş (opsiyonel)</summary>
-          <div class="row cols-2" style="margin-top: 0.6rem">
-            <div>
-              <label for="sources">Kaynak</label>
-              <select id="sources">
-                <option value="all">Hepsi (önerilen)</option>
-                <option value="emlakjet">Sadece Emlakjet</option>
-                <option value="sahibinden,hepsiemlak,emlakjet">Büyük Portallar</option>
-              </select>
-            </div>
-            <div>
-              <label for="token">Güvenlik Kodu (varsa)</label>
-              <input id="token" placeholder="Çoğu kullanıcı için boş bırakın" />
-            </div>
-          </div>
-        </details>
+        <button id="startBtn">TARAMAYI BAŞLAT</button>
+        <div id="status" class="hint ok">Hazır. Bölgeyi seçip butona basın.</div>
+        <p class="muted tiny">Not: Tarama genelde 2-4 dakika sürer. Beklerken sayfayı kapatmayın.</p>
       </section>
 
       <section class="card">
         <div class="stats">
-          <div class="stat-box">
-            <div class="stat-label">Son Tarama</div>
-            <div id="statLast" class="stat-value">-</div>
+          <div class="stat">
+            <div class="k">Son tarama zamanı</div>
+            <div id="lastRun" class="v">-</div>
           </div>
-          <div class="stat-box">
-            <div class="stat-label">Aktif İlan</div>
-            <div id="statActive" class="stat-value">-</div>
+          <div class="stat">
+            <div class="k">Aktif ilan sayısı</div>
+            <div id="activeCount" class="v">-</div>
           </div>
-          <div class="stat-box">
-            <div class="stat-label">Fırsat Adayı</div>
-            <div id="statDeals" class="stat-value">-</div>
+          <div class="stat">
+            <div class="k">Uygun fiyat adayı</div>
+            <div id="dealCount" class="v">-</div>
           </div>
         </div>
       </section>
 
       <section class="card">
-        <h2 style="margin: 0 0 0.2rem">En İyi Fırsat İlanlar</h2>
-        <p class="muted tiny">Sistem, benzer ilanlara göre düşük fiyatlı olanları öne çıkarır.</p>
-        <table>
-          <thead>
-            <tr>
-              <th>İndirim</th>
-              <th>Fiyat</th>
-              <th>Tahmini Değer</th>
-              <th>İlan</th>
-            </tr>
-          </thead>
-          <tbody id="deals"></tbody>
-        </table>
-      </section>
-
-      <section class="card">
-        <h2 style="margin: 0 0 0.2rem">Son Taramalar</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Run</th>
-              <th>Zaman</th>
-              <th>İlan</th>
-            </tr>
-          </thead>
-          <tbody id="runs"></tbody>
-        </table>
+        <h2 style="margin: 0 0 0.5rem">En Uygun 10 İlan</h2>
+        <div id="dealList" class="deal-list"></div>
       </section>
     </main>
 
     <script>
       const cityEl = document.getElementById("city");
       const districtEl = document.getElementById("district");
-      const sourcesEl = document.getElementById("sources");
-      const tokenEl = document.getElementById("token");
+      const startBtn = document.getElementById("startBtn");
       const statusEl = document.getElementById("status");
-      const startScanBtn = document.getElementById("startScan");
-      const refreshDataBtn = document.getElementById("refreshData");
-      const dealsEl = document.getElementById("deals");
-      const runsEl = document.getElementById("runs");
-      const statLastEl = document.getElementById("statLast");
-      const statActiveEl = document.getElementById("statActive");
-      const statDealsEl = document.getElementById("statDeals");
+      const lastRunEl = document.getElementById("lastRun");
+      const activeCountEl = document.getElementById("activeCount");
+      const dealCountEl = document.getElementById("dealCount");
+      const dealListEl = document.getElementById("dealList");
 
       let locationData = [];
-      let lastRuns = [];
+      let autoTimer = null;
 
       function setStatus(text, isError = false) {
         statusEl.textContent = text;
-        if (isError) {
-          statusEl.style.background = "#fff1f2";
-          statusEl.style.borderColor = "#fecdd3";
-          statusEl.style.color = "#9f1239";
-        } else {
-          statusEl.style.background = "#ecfdf3";
-          statusEl.style.borderColor = "#cdeedb";
-          statusEl.style.color = "#12613b";
-        }
+        statusEl.className = isError ? "hint bad" : "hint ok";
       }
 
       function normalizeForMatch(text) {
@@ -356,27 +283,15 @@
         return values.find((x) => normalizeForMatch(x) === wanted) || null;
       }
 
-      function fillDistricts(cityName) {
-        const row = locationData.find((x) => x.city === cityName);
-        const districts = row ? row.districts : [];
-        districtEl.innerHTML = "";
-        for (const district of districts) {
-          const opt = document.createElement("option");
-          opt.value = district;
-          opt.textContent = district;
-          districtEl.appendChild(opt);
-        }
-      }
-
-      function fmtPct(value) {
+      function fmtInt(value) {
         const n = Number(value);
         if (!Number.isFinite(n)) {
           return "-";
         }
-        return `%${(n * 100).toFixed(1)}`;
+        return new Intl.NumberFormat("tr-TR").format(n);
       }
 
-      function fmtTl(value) {
+      function fmtMoney(value) {
         const n = Number(value);
         if (!Number.isFinite(n)) {
           return "-";
@@ -388,12 +303,12 @@
         }).format(n);
       }
 
-      function fmtInt(value) {
+      function fmtDiscount(value) {
         const n = Number(value);
         if (!Number.isFinite(n)) {
           return "-";
         }
-        return new Intl.NumberFormat("tr-TR").format(n);
+        return `%${(n * 100).toFixed(1)} daha düşük`;
       }
 
       function fmtDate(value) {
@@ -405,6 +320,19 @@
           return value;
         }
         return d.toLocaleString("tr-TR", { hour12: false });
+      }
+
+      function fillDistricts(cityName) {
+        const row = locationData.find((x) => x.city === cityName);
+        const districts = row ? row.districts : [];
+
+        districtEl.innerHTML = "";
+        for (const district of districts) {
+          const opt = document.createElement("option");
+          opt.value = district;
+          opt.textContent = district;
+          districtEl.appendChild(opt);
+        }
       }
 
       async function loadLocations() {
@@ -420,64 +348,45 @@
           cityEl.appendChild(opt);
         }
 
-        const defaultCity = "Istanbul";
-        const defaultDistrict = "Atasehir";
-        const pickedCity =
-          pickByNormalized(
-            locationData.map((x) => x.city),
-            defaultCity
-          ) || locationData[0]?.city;
+        const defaultCity = pickByNormalized(
+          locationData.map((x) => x.city),
+          "Istanbul"
+        ) || locationData[0]?.city;
 
-        cityEl.value = pickedCity || "";
+        cityEl.value = defaultCity || "";
         fillDistricts(cityEl.value);
 
-        const pickedDistrict = pickByNormalized(
+        const defaultDistrict = pickByNormalized(
           [...districtEl.options].map((x) => x.value),
-          defaultDistrict
+          "Atasehir"
         );
-        if (pickedDistrict) {
-          districtEl.value = pickedDistrict;
+        if (defaultDistrict) {
+          districtEl.value = defaultDistrict;
         }
       }
 
-      async function loadRuns() {
+      async function fetchRunInfo() {
         const city = cityEl.value || "Istanbul";
         const district = districtEl.value || "Atasehir";
-        const params = new URLSearchParams({ city, district, limit: "8" });
+        const params = new URLSearchParams({ city, district, limit: "1" });
         const res = await fetch(`/api/runs?${params.toString()}`);
         const body = await res.json();
         if (!res.ok) {
           throw new Error(body.error || `HTTP ${res.status}`);
         }
 
-        const runs = body.runs || [];
-        lastRuns = runs;
-
-        runsEl.innerHTML = "";
-        if (runs.length === 0) {
-          runsEl.innerHTML = "<tr><td colspan='3'>Henüz tarama yok.</td></tr>";
-          statLastEl.textContent = "-";
-          return runs;
-        }
-
-        statLastEl.textContent = fmtDate(runs[0].startedAt);
-
-        for (const run of runs) {
-          const tr = document.createElement("tr");
-          tr.innerHTML = `<td>${run.runTag}</td><td>${fmtDate(run.startedAt)}</td><td>${fmtInt(run.uniqueCount)}</td>`;
-          runsEl.appendChild(tr);
-        }
-
-        return runs;
+        const run = (body.runs || [])[0];
+        lastRunEl.textContent = run ? fmtDate(run.startedAt) : "-";
       }
 
-      async function loadDeals() {
+      async function fetchDeals() {
         const city = cityEl.value || "Istanbul";
         const district = districtEl.value || "Atasehir";
+
         const params = new URLSearchParams({
           city,
           district,
-          limit: "20",
+          limit: "10",
           min_discount: "0.12",
           min_confidence: "0.35",
           min_comps: "6"
@@ -490,95 +399,96 @@
         }
 
         const totals = body.totals || {};
-        statActiveEl.textContent = fmtInt(totals.activeListings);
-        statDealsEl.textContent = fmtInt(totals.dealsMatched);
+        activeCountEl.textContent = fmtInt(totals.activeListings);
+        dealCountEl.textContent = fmtInt(totals.dealsMatched);
 
         const deals = body.deals || [];
-        dealsEl.innerHTML = "";
+        dealListEl.innerHTML = "";
 
         if (deals.length === 0) {
-          dealsEl.innerHTML = "<tr><td colspan='4'>Bu bölgede henüz fırsat adayı görünmüyor.</td></tr>";
+          dealListEl.innerHTML = '<div class="empty">Bu bölgede şu an uygun fiyat adayı görünmüyor. Tekrar tarama başlatabilirsiniz.</div>';
           return;
         }
 
         for (const d of deals) {
           const title = (d.title || "ilan").replace(/</g, "&lt;").replace(/>/g, "&gt;");
           const safeUrl = String(d.url || "").replace(/"/g, "&quot;");
-          const tr = document.createElement("tr");
-          tr.innerHTML = `
-            <td>${fmtPct(d.discountPct)}</td>
-            <td>${fmtTl(d.priceTl)}</td>
-            <td>${fmtTl(d.fairPriceEstimate)}</td>
-            <td><a class="listing-link" href="${safeUrl}" target="_blank" rel="noopener noreferrer">${title}</a></td>
+
+          const item = document.createElement("div");
+          item.className = "deal";
+          item.innerHTML = `
+            <strong>${fmtDiscount(d.discountPct)}</strong>
+            <div class="line">İlan fiyatı: ${fmtMoney(d.priceTl)}</div>
+            <div class="line">Tahmini normal fiyat: ${fmtMoney(d.fairPriceEstimate)}</div>
+            <div class="line">${title}</div>
+            <div><a href="${safeUrl}" target="_blank" rel="noopener noreferrer">İlanı aç</a></div>
           `;
-          dealsEl.appendChild(tr);
+          dealListEl.appendChild(item);
         }
       }
 
-      async function refreshAll() {
-        await Promise.all([loadRuns(), loadDeals()]);
+      async function refreshSnapshot() {
+        await Promise.all([fetchRunInfo(), fetchDeals()]);
+      }
+
+      function startAutoRefresh() {
+        if (autoTimer) {
+          clearInterval(autoTimer);
+        }
+        autoTimer = setInterval(() => {
+          refreshSnapshot().catch(() => {
+            // Keep silent during background refreshes.
+          });
+        }, 20000);
       }
 
       async function startScan() {
         const city = cityEl.value;
         const district = districtEl.value;
-        const sources = sourcesEl.value || "all";
-        const token = tokenEl.value.trim();
 
-        startScanBtn.disabled = true;
+        startBtn.disabled = true;
         try {
           setStatus(`Tarama başlatılıyor...\nBölge: ${city} / ${district}`);
-          const headers = { "content-type": "application/json" };
-          if (token) {
-            headers["x-crawl-token"] = token;
-          }
 
           const res = await fetch("/api/crawl-request", {
             method: "POST",
-            headers,
-            body: JSON.stringify({ city, district, sources })
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ city, district, sources: "all" })
           });
+
           const body = await res.json();
           if (!res.ok) {
             throw new Error(body.error || `HTTP ${res.status}`);
           }
 
-          setStatus("Tarama başlatıldı.\nGenelde 2-4 dakika içinde sonuç gelir.\n1-2 dakika sonra 'Sonuçları Yenile'ye basın.");
+          setStatus("Tarama başladı.\nLütfen 2-4 dakika bekleyin.\nSonuçlar bu sayfaya otomatik düşecek.");
+          await refreshSnapshot();
         } catch (error) {
-          setStatus(`Tarama başlatılamadı: ${String(error.message || error)}`, true);
+          setStatus(`Başlatılamadı: ${String(error.message || error)}`, true);
         } finally {
-          startScanBtn.disabled = false;
+          startBtn.disabled = false;
         }
       }
 
       cityEl.addEventListener("change", () => {
         fillDistricts(cityEl.value);
-        refreshAll().catch((error) => setStatus(`Yenileme hatası: ${String(error.message || error)}`, true));
+        refreshSnapshot().catch((error) => setStatus(`Veri alınamadı: ${String(error.message || error)}`, true));
       });
 
       districtEl.addEventListener("change", () => {
-        refreshAll().catch((error) => setStatus(`Yenileme hatası: ${String(error.message || error)}`, true));
+        refreshSnapshot().catch((error) => setStatus(`Veri alınamadı: ${String(error.message || error)}`, true));
       });
 
-      startScanBtn.addEventListener("click", () => {
+      startBtn.addEventListener("click", () => {
         startScan().catch((error) => setStatus(`Tarama hatası: ${String(error.message || error)}`, true));
-      });
-
-      refreshDataBtn.addEventListener("click", () => {
-        refreshDataBtn.disabled = true;
-        refreshAll()
-          .then(() => setStatus("Sonuçlar güncellendi."))
-          .catch((error) => setStatus(`Yenileme hatası: ${String(error.message || error)}`, true))
-          .finally(() => {
-            refreshDataBtn.disabled = false;
-          });
       });
 
       (async function bootstrap() {
         try {
           await loadLocations();
-          await refreshAll();
-          setStatus("Hazır. Bölgeyi seçip taramayı başlatabilirsiniz.");
+          await refreshSnapshot();
+          startAutoRefresh();
+          setStatus("Hazır. Sadece bölgeyi seçip 'TARAMAYI BAŞLAT' butonuna basın.");
         } catch (error) {
           setStatus(`Açılış hatası: ${String(error.message || error)}`, true);
         }
