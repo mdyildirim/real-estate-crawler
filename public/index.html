@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TR Real Estate Crawler</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700&family=JetBrains+Mono:wght@500&display=swap");
+
+      :root {
+        color-scheme: light;
+      }
+      body {
+        margin: 0;
+        font-family: "Manrope", "Segoe UI", sans-serif;
+        background: linear-gradient(180deg, #f8fafc 0%, #edf2f7 100%);
+        color: #111827;
+      }
+      main {
+        max-width: 1040px;
+        margin: 2rem auto;
+        padding: 0 1rem 2rem;
+      }
+      h1 {
+        margin: 0 0 0.4rem;
+      }
+      p {
+        margin: 0.3rem 0 0.8rem;
+      }
+      .grid {
+        display: grid;
+        gap: 1rem;
+      }
+      .grid.cols-2 {
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      }
+      .card {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 14px;
+        padding: 1rem;
+      }
+      label {
+        display: block;
+        margin-bottom: 0.35rem;
+        font-weight: 600;
+      }
+      select,
+      input,
+      button {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid #cbd5e1;
+        padding: 0.6rem 0.7rem;
+        font-size: 0.95rem;
+        box-sizing: border-box;
+      }
+      .btn-row {
+        display: flex;
+        gap: 0.7rem;
+      }
+      .btn-row button {
+        width: auto;
+      }
+      button {
+        cursor: pointer;
+        border: 0;
+        background: #0b57d0;
+        color: #fff;
+        font-weight: 600;
+      }
+      button.secondary {
+        background: #334155;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        text-align: left;
+        border-bottom: 1px solid #e5e7eb;
+        padding: 0.55rem;
+        vertical-align: top;
+      }
+      .muted {
+        color: #64748b;
+      }
+      .status {
+        white-space: pre-wrap;
+        font-family: "JetBrains Mono", SFMono-Regular, Menlo, monospace;
+        font-size: 0.86rem;
+        background: #f8fafc;
+        border: 1px dashed #cbd5e1;
+        border-radius: 10px;
+        padding: 0.7rem;
+        min-height: 56px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Türkiye Real-Estate Crawl UI</h1>
+      <p class="muted">
+        Select any city/district, then dispatch a crawl workflow (GitHub Actions) or view recent runs from D1.
+      </p>
+
+      <div class="grid cols-2">
+        <section class="card">
+          <h2 style="margin-top: 0">Crawl Request</h2>
+          <div class="grid">
+            <div>
+              <label for="city">City</label>
+              <select id="city"></select>
+            </div>
+            <div>
+              <label for="district">District</label>
+              <select id="district"></select>
+            </div>
+            <div>
+              <label for="sources">Sources</label>
+              <select id="sources">
+                <option value="all">all</option>
+                <option value="emlakjet">emlakjet</option>
+                <option value="sahibinden,hepsiemlak,emlakjet">main portals</option>
+                <option value="atasehirsatilik,turyap_251316,emlakjet">atasehir extras + emlakjet</option>
+              </select>
+            </div>
+            <div>
+              <label for="token">Request Token (optional)</label>
+              <input id="token" placeholder="Needed only if CRAWL_REQUEST_TOKEN is configured" />
+            </div>
+            <div class="btn-row">
+              <button id="dispatch">Dispatch Crawl</button>
+              <button id="refresh" class="secondary">Refresh Runs</button>
+            </div>
+            <div id="status" class="status">Ready.</div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2 style="margin-top: 0">Latest Runs</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Run</th>
+                <th>Started</th>
+                <th>Unique</th>
+                <th>Raw</th>
+              </tr>
+            </thead>
+            <tbody id="runs"></tbody>
+          </table>
+        </section>
+      </div>
+    </main>
+
+    <script>
+      const cityEl = document.getElementById("city");
+      const districtEl = document.getElementById("district");
+      const sourcesEl = document.getElementById("sources");
+      const tokenEl = document.getElementById("token");
+      const statusEl = document.getElementById("status");
+      const runsEl = document.getElementById("runs");
+      const dispatchBtn = document.getElementById("dispatch");
+      const refreshBtn = document.getElementById("refresh");
+
+      let locationData = [];
+
+      function setStatus(message) {
+        statusEl.textContent = message;
+      }
+
+      function normalizeForMatch(text) {
+        return String(text || "")
+          .trim()
+          .toLocaleLowerCase("tr-TR")
+          .replace(/ç/g, "c")
+          .replace(/ğ/g, "g")
+          .replace(/ı/g, "i")
+          .replace(/ö/g, "o")
+          .replace(/ş/g, "s")
+          .replace(/ü/g, "u");
+      }
+
+      function pickByNormalized(values, target) {
+        const wanted = normalizeForMatch(target);
+        return values.find((x) => normalizeForMatch(x) === wanted) || null;
+      }
+
+      function fillDistricts(cityName) {
+        const row = locationData.find((x) => x.city === cityName);
+        const districts = row ? row.districts : [];
+        districtEl.innerHTML = "";
+        for (const district of districts) {
+          const opt = document.createElement("option");
+          opt.value = district;
+          opt.textContent = district;
+          districtEl.appendChild(opt);
+        }
+      }
+
+      async function loadLocations() {
+        const res = await fetch("/tr-locations.json");
+        const body = await res.json();
+        locationData = body.items || [];
+        cityEl.innerHTML = "";
+        for (const item of locationData) {
+          const opt = document.createElement("option");
+          opt.value = item.city;
+          opt.textContent = item.city;
+          cityEl.appendChild(opt);
+        }
+
+        const defaultCity = "Istanbul";
+        const defaultDistrict = "Atasehir";
+        const pickedCity =
+          pickByNormalized(
+            locationData.map((x) => x.city),
+            defaultCity
+          ) || locationData[0]?.city;
+        cityEl.value = pickedCity || "";
+        fillDistricts(cityEl.value);
+        const pickedDistrict = pickByNormalized(
+          [...districtEl.options].map((x) => x.value),
+          defaultDistrict
+        );
+        if (pickedDistrict) {
+          districtEl.value = pickedDistrict;
+        }
+      }
+
+      async function loadRuns() {
+        const city = cityEl.value || "Istanbul";
+        const district = districtEl.value || "Atasehir";
+        const params = new URLSearchParams({ city, district, limit: "10" });
+        const res = await fetch(`/api/runs?${params.toString()}`);
+        const body = await res.json();
+        const runs = body.runs || [];
+        runsEl.innerHTML = "";
+        if (runs.length === 0) {
+          runsEl.innerHTML = "<tr><td colspan='4'>No runs yet for selected area.</td></tr>";
+          return;
+        }
+        for (const run of runs) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${run.runTag}</td><td>${run.startedAt}</td><td>${run.uniqueCount}</td><td>${run.rawCount}</td>`;
+          runsEl.appendChild(tr);
+        }
+      }
+
+      async function dispatchCrawl() {
+        const city = cityEl.value;
+        const district = districtEl.value;
+        const sources = sourcesEl.value;
+        const token = tokenEl.value.trim();
+
+        dispatchBtn.disabled = true;
+        try {
+          setStatus(`Dispatching workflow for ${city}/${district} ...`);
+          const headers = { "content-type": "application/json" };
+          if (token) {
+            headers["x-crawl-token"] = token;
+          }
+          const res = await fetch("/api/crawl-request", {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ city, district, sources })
+          });
+          const body = await res.json();
+          if (!res.ok) {
+            throw new Error(body.error || `HTTP ${res.status}`);
+          }
+          setStatus(`Workflow dispatched.\ncity=${city}\ndistrict=${district}\nsources=${sources}`);
+        } catch (error) {
+          setStatus(`Dispatch failed: ${String(error.message || error)}`);
+        } finally {
+          dispatchBtn.disabled = false;
+        }
+      }
+
+      cityEl.addEventListener("change", () => {
+        fillDistricts(cityEl.value);
+        loadRuns().catch((error) => setStatus(`Run list error: ${String(error)}`));
+      });
+      districtEl.addEventListener("change", () => {
+        loadRuns().catch((error) => setStatus(`Run list error: ${String(error)}`));
+      });
+      refreshBtn.addEventListener("click", () => {
+        loadRuns().catch((error) => setStatus(`Run list error: ${String(error)}`));
+      });
+      dispatchBtn.addEventListener("click", () => {
+        dispatchCrawl().catch((error) => setStatus(`Dispatch error: ${String(error)}`));
+      });
+
+      (async function bootstrap() {
+        try {
+          await loadLocations();
+          await loadRuns();
+          setStatus("Ready.");
+        } catch (error) {
+          setStatus(`Bootstrap failed: ${String(error.message || error)}`);
+        }
+      })();
+    </script>
+  </body>
+</html>

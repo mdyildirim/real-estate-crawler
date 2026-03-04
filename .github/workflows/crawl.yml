@@ -1,0 +1,79 @@
+name: Crawl Real Estate
+
+on:
+  workflow_dispatch:
+    inputs:
+      city:
+        description: "City in Turkiye"
+        required: false
+        default: "Istanbul"
+      district:
+        description: "District in selected city"
+        required: false
+        default: "Atasehir"
+      sources:
+        description: "Comma-separated source keys or all"
+        required: false
+        default: "all"
+  schedule:
+    - cron: "30 */6 * * *"
+
+jobs:
+  crawl-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Resolve inputs
+        id: params
+        shell: bash
+        run: |
+          CITY="${{ github.event.inputs.city }}"
+          DISTRICT="${{ github.event.inputs.district }}"
+          SOURCES="${{ github.event.inputs.sources }}"
+
+          if [ -z "$CITY" ]; then CITY="Istanbul"; fi
+          if [ -z "$DISTRICT" ]; then DISTRICT="Atasehir"; fi
+          if [ -z "$SOURCES" ]; then SOURCES="all"; fi
+
+          echo "city=$CITY" >> "$GITHUB_OUTPUT"
+          echo "district=$DISTRICT" >> "$GITHUB_OUTPUT"
+          echo "sources=$SOURCES" >> "$GITHUB_OUTPUT"
+
+      - name: Run crawler
+        run: |
+          node src/crawl.js \
+            --city="${{ steps.params.outputs.city }}" \
+            --district="${{ steps.params.outputs.district }}" \
+            --sources="${{ steps.params.outputs.sources }}" \
+            --sqlite-path=data/real-estate-ci.sqlite
+
+      - name: Push crawl payload to Cloudflare ingest endpoint
+        if: ${{ secrets.CF_INGEST_URL != '' }}
+        env:
+          CF_INGEST_URL: ${{ secrets.CF_INGEST_URL }}
+          CF_INGEST_TOKEN: ${{ secrets.CF_INGEST_TOKEN }}
+        run: npm run push:cf
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: crawl-output-${{ github.run_id }}
+          path: |
+            output/latest-results.json
+            output/latest-summary.json
+            output/latest-listings.csv
+            data/real-estate-ci.sqlite
+          if-no-files-found: warn

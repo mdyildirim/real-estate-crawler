@@ -1,0 +1,7 @@
+INGEST_API_TOKEN=replace-with-a-strong-token
+CRAWL_REQUEST_TOKEN=optional-request-token
+GITHUB_TOKEN=ghp_xxx
+GITHUB_OWNER=your-github-user-or-org
+GITHUB_REPO=real-estate-crawler
+GITHUB_WORKFLOW_FILE=crawl.yml
+GITHUB_REF=main
