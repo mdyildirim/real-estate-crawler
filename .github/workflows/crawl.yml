@@ -64,12 +64,14 @@ jobs:
         env:
           CF_INGEST_URL: ${{ secrets.CF_INGEST_URL }}
           CF_INGEST_TOKEN: ${{ secrets.CF_INGEST_TOKEN }}
+          FALLBACK_INGEST_URL: "https://real-estate-crawler.pages.dev/api/ingest"
         run: |
-          if [ -z "$CF_INGEST_URL" ]; then
-            echo "CF_INGEST_URL is not configured. Skipping ingest push."
-            exit 0
+          TARGET_INGEST_URL="$CF_INGEST_URL"
+          if [ -z "$TARGET_INGEST_URL" ]; then
+            TARGET_INGEST_URL="$FALLBACK_INGEST_URL"
+            echo "CF_INGEST_URL is not configured. Falling back to $TARGET_INGEST_URL"
           fi
-          npm run push:cf
+          CF_INGEST_URL="$TARGET_INGEST_URL" CF_INGEST_TOKEN="$CF_INGEST_TOKEN" npm run push:cf
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
