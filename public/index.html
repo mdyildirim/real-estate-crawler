@@ -188,6 +188,27 @@
         text-decoration: underline;
       }
 
+      .reason {
+        margin-top: 0.35rem;
+        border: 1px solid #e4eaf4;
+        border-radius: 10px;
+        padding: 0.55rem 0.6rem;
+        background: #f8fbff;
+      }
+
+      .reason-title {
+        font-size: 0.9rem;
+        font-weight: 800;
+        color: #2c4668;
+        margin-bottom: 0.25rem;
+      }
+
+      .reason-line {
+        font-size: 0.88rem;
+        color: #2f4b70;
+        line-height: 1.35;
+      }
+
       .empty {
         color: var(--muted);
         border: 1px dashed var(--line);
@@ -373,6 +394,14 @@
         return `%${(n * 100).toFixed(1)} daha düşük`;
       }
 
+      function fmtPct(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) {
+          return "-";
+        }
+        return `%${(n * 100).toFixed(1)}`;
+      }
+
       function fmtDate(value) {
         if (!value) {
           return "-";
@@ -389,6 +418,15 @@
           city: canonicalAreaName(cityEl.value, "Istanbul"),
           district: canonicalAreaName(districtEl.value, "Atasehir")
         };
+      }
+
+      function escHtml(value) {
+        return String(value || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
       }
 
       function fillDistricts(cityName) {
@@ -478,8 +516,13 @@
         }
 
         for (const d of deals) {
-          const title = (d.title || "ilan").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-          const safeUrl = String(d.url || "").replace(/"/g, "&quot;");
+          const title = escHtml(d.title || "ilan");
+          const safeUrl = escHtml(d.url || "");
+          const reason = d.reasoning || {};
+          const roomText = reason.roomCount ? escHtml(reason.roomCount) : "-";
+          const neighborhoodText = reason.neighborhood ? escHtml(reason.neighborhood) : "-";
+          const methodLabel = escHtml(reason.methodLabel || d.comparableBucket || "-");
+          const sqmTypeLabel = reason.usedSqmType === "net" ? "Net m²" : "Brüt m²";
 
           const item = document.createElement("div");
           item.className = "deal";
@@ -488,6 +531,23 @@
             <div class="line">İlan fiyatı: ${fmtMoney(d.priceTl)}</div>
             <div class="line">Tahmini normal fiyat: ${fmtMoney(d.fairPriceEstimate)}</div>
             <div class="line">${title}</div>
+            <div class="reason">
+              <div class="reason-title">Neden fırsat?</div>
+              <div class="reason-line">Karşılaştırma yöntemi: ${methodLabel}</div>
+              <div class="reason-line">Emsal ilan sayısı: ${fmtInt(reason.comparableCount || d.comparableCount)}</div>
+              <div class="reason-line">Oda: ${roomText} | Mahalle: ${neighborhoodText}</div>
+              <div class="reason-line">Kullanılan alan: ${sqmTypeLabel} (${fmtInt(reason.effectiveSqm || d.effectiveSqm)} m²)</div>
+              <div class="reason-line">Bu ilanın m² fiyatı: ${fmtMoney(reason.listingPricePerSqm || d.pricePerSqm)}</div>
+              <div class="reason-line">Emsal medyan m² fiyatı: ${fmtMoney(reason.comparableMedianPricePerSqm || d.fairPricePerSqm)}</div>
+              <div class="reason-line">m² bazında fark: ${fmtPct(reason.pricePerSqmGapPct)}</div>
+              <div class="reason-line">İndirim tutarı: ${fmtMoney(reason.discountAmountTl || d.discountAmountTl)} (${fmtPct(reason.discountPct || d.discountPct)})</div>
+              <div class="reason-line">Güven skoru: ${fmtPct(reason.confidence || d.confidence)} | Dağılım: ${fmtPct(reason.dispersionRatio || d.dispersionRatio)}</div>
+              <div class="reason-line">Endeksa farkı: ${
+                Number.isFinite(reason.discountVsEndeksa || d.discountVsEndeksa)
+                  ? `${fmtPct(reason.discountVsEndeksa || d.discountVsEndeksa)}`
+                  : "veri yok"
+              }</div>
+            </div>
             <div><a href="${safeUrl}" target="_blank" rel="noopener noreferrer">İlanı aç</a></div>
           `;
           dealListEl.appendChild(item);

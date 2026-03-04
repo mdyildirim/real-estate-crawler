@@ -28,6 +28,16 @@ function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n));
 }
 
+function bucketLabel(bucket) {
+  if (bucket === "neighborhood+room") {
+    return "Mahalle + oda sayısı";
+  }
+  if (bucket === "district+room") {
+    return "İlçe + oda sayısı";
+  }
+  return "İlçe + m² benzerliği";
+}
+
 function canonicalAreaName(value, fallback) {
   const raw = String(value || fallback || "")
     .replace(/\s+/g, " ")
@@ -190,6 +200,7 @@ function scoreDeal(target, rows, opts) {
   const discountPct = (fairPrice - target.priceTl) / fairPrice;
   const confidence = clamp((comps.length / 20) * clamp(1 - dispersionRatio, 0.15, 1), 0, 1);
   const score = discountPct * confidence;
+  const pricePerSqmGapPct = (compMedian - target._pricePerSqm) / compMedian;
 
   let endeksaMidPrice = null;
   if (Number.isFinite(target.endeksaMinPrice) && Number.isFinite(target.endeksaMaxPrice)) {
@@ -226,7 +237,28 @@ function scoreDeal(target, rows, opts) {
     endeksaMinPrice: target.endeksaMinPrice || null,
     endeksaMaxPrice: target.endeksaMaxPrice || null,
     discountVsEndeksa,
-    lastSeenAt: target.lastSeenAt
+    lastSeenAt: target.lastSeenAt,
+    reasoning: {
+      method: picked.bucket,
+      methodLabel: bucketLabel(picked.bucket),
+      comparableCount: comps.length,
+      effectiveSqm: target._effectiveSqm,
+      usedSqmType: Number.isFinite(target.netSqm) && target.netSqm > 0 ? "net" : "gross",
+      roomCount: target.roomCount || null,
+      neighborhood: target.neighborhood || null,
+      listingPricePerSqm: target._pricePerSqm,
+      comparableMedianPricePerSqm: compMedian,
+      pricePerSqmGapPct,
+      fairPriceEstimate: fairPrice,
+      discountAmountTl: fairPrice - target.priceTl,
+      discountPct,
+      confidence,
+      dispersionRatio,
+      blendedWithAvgPriceForSale: Number.isFinite(target.avgPriceForSale) && target.avgPriceForSale > 0,
+      avgPriceForSale: target.avgPriceForSale || null,
+      endeksaMidPrice,
+      discountVsEndeksa
+    }
   };
 }
 
