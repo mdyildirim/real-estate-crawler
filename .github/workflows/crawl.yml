@@ -61,11 +61,15 @@ jobs:
             --sqlite-path=data/real-estate-ci.sqlite
 
       - name: Push crawl payload to Cloudflare ingest endpoint
-        if: ${{ secrets.CF_INGEST_URL != '' }}
         env:
           CF_INGEST_URL: ${{ secrets.CF_INGEST_URL }}
           CF_INGEST_TOKEN: ${{ secrets.CF_INGEST_TOKEN }}
-        run: npm run push:cf
+        run: |
+          if [ -z "$CF_INGEST_URL" ]; then
+            echo "CF_INGEST_URL is not configured. Skipping ingest push."
+            exit 0
+          fi
+          npm run push:cf
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
