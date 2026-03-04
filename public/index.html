@@ -402,6 +402,16 @@
         return `%${(n * 100).toFixed(1)}`;
       }
 
+      function finiteOr(...values) {
+        for (const value of values) {
+          const n = Number(value);
+          if (Number.isFinite(n)) {
+            return n;
+          }
+        }
+        return null;
+      }
+
       function fmtDate(value) {
         if (!value) {
           return "-";
@@ -523,6 +533,25 @@
           const neighborhoodText = reason.neighborhood ? escHtml(reason.neighborhood) : "-";
           const methodLabel = escHtml(reason.methodLabel || d.comparableBucket || "-");
           const sqmTypeLabel = reason.usedSqmType === "net" ? "Net m²" : "Brüt m²";
+          const compCount = finiteOr(reason.comparableCount, d.comparableCount);
+          const effectiveSqm = finiteOr(reason.effectiveSqm, d.effectiveSqm);
+          const listingPsm = finiteOr(reason.listingPricePerSqm, d.pricePerSqm);
+          const compMedianPsm = finiteOr(reason.comparableMedianPricePerSqm, d.fairPricePerSqm);
+          const gapPct = finiteOr(reason.pricePerSqmGapPct);
+          const discountAmount = finiteOr(reason.discountAmountTl, d.discountAmountTl);
+          const discountPct = finiteOr(reason.discountPct, d.discountPct);
+          const confidence = finiteOr(reason.confidence, d.confidence);
+          const dispersionRatio = finiteOr(reason.dispersionRatio, d.dispersionRatio);
+          const endeksaGap = finiteOr(reason.discountVsEndeksa, d.discountVsEndeksa);
+          const avgSimilarity = finiteOr(reason.averageComparableSimilarity, d.averageComparableSimilarity);
+          const qualityMultiplier = finiteOr(reason.qualityMultiplier, d.qualityMultiplier);
+          const sizeScore = finiteOr(reason.sizeScore);
+          const freshnessScore = finiteOr(reason.freshnessScore);
+          const floorScore = finiteOr(reason.floorScore);
+          const livabilityQuality = finiteOr(reason.livabilityQuality);
+          const ageYears = finiteOr(reason.buildingAgeYears);
+          const floorRaw = reason.floorRaw ? escHtml(reason.floorRaw) : "-";
+          const ageRaw = reason.buildingAgeRaw ? escHtml(reason.buildingAgeRaw) : "-";
 
           const item = document.createElement("div");
           item.className = "deal";
@@ -534,17 +563,20 @@
             <div class="reason">
               <div class="reason-title">Neden fırsat?</div>
               <div class="reason-line">Karşılaştırma yöntemi: ${methodLabel}</div>
-              <div class="reason-line">Emsal ilan sayısı: ${fmtInt(reason.comparableCount || d.comparableCount)}</div>
+              <div class="reason-line">Emsal ilan sayısı: ${fmtInt(compCount)}</div>
               <div class="reason-line">Oda: ${roomText} | Mahalle: ${neighborhoodText}</div>
-              <div class="reason-line">Kullanılan alan: ${sqmTypeLabel} (${fmtInt(reason.effectiveSqm || d.effectiveSqm)} m²)</div>
-              <div class="reason-line">Bu ilanın m² fiyatı: ${fmtMoney(reason.listingPricePerSqm || d.pricePerSqm)}</div>
-              <div class="reason-line">Emsal medyan m² fiyatı: ${fmtMoney(reason.comparableMedianPricePerSqm || d.fairPricePerSqm)}</div>
-              <div class="reason-line">m² bazında fark: ${fmtPct(reason.pricePerSqmGapPct)}</div>
-              <div class="reason-line">İndirim tutarı: ${fmtMoney(reason.discountAmountTl || d.discountAmountTl)} (${fmtPct(reason.discountPct || d.discountPct)})</div>
-              <div class="reason-line">Güven skoru: ${fmtPct(reason.confidence || d.confidence)} | Dağılım: ${fmtPct(reason.dispersionRatio || d.dispersionRatio)}</div>
+              <div class="reason-line">Kullanılan alan: ${sqmTypeLabel} (${fmtInt(effectiveSqm)} m²)</div>
+              <div class="reason-line">Bina yaşı: ${ageRaw} (${Number.isFinite(ageYears) ? `${ageYears.toFixed(1)} yıl` : "hesaplanamadı"})</div>
+              <div class="reason-line">Kat bilgisi: ${floorRaw}</div>
+              <div class="reason-line">Bu ilanın m² fiyatı: ${fmtMoney(listingPsm)}</div>
+              <div class="reason-line">Emsal medyan m² fiyatı: ${fmtMoney(compMedianPsm)}</div>
+              <div class="reason-line">m² bazında fark: ${fmtPct(gapPct)}</div>
+              <div class="reason-line">İndirim tutarı: ${fmtMoney(discountAmount)} (${fmtPct(discountPct)})</div>
+              <div class="reason-line">Güven skoru: ${fmtPct(confidence)} | Dağılım: ${fmtPct(dispersionRatio)} | Benzerlik ort.: ${fmtPct(avgSimilarity)}</div>
+              <div class="reason-line">Kalite çarpanı: ${qualityMultiplier == null ? "-" : qualityMultiplier.toFixed(2)} | Boyut:${fmtPct(sizeScore)} Yaş:${fmtPct(freshnessScore)} Kat:${fmtPct(floorScore)} Toplam kalite:${fmtPct(livabilityQuality)}</div>
               <div class="reason-line">Endeksa farkı: ${
-                Number.isFinite(reason.discountVsEndeksa || d.discountVsEndeksa)
-                  ? `${fmtPct(reason.discountVsEndeksa || d.discountVsEndeksa)}`
+                Number.isFinite(endeksaGap)
+                  ? `${fmtPct(endeksaGap)}`
                   : "veri yok"
               }</div>
             </div>

@@ -35,6 +35,9 @@ function bucketLabel(bucket) {
   if (bucket === "district+room") {
     return "İlçe + oda sayısı";
   }
+  if (bucket === "district+multifactor") {
+    return "İlçe + çok faktörlü benzerlik";
+  }
   return "İlçe + m² benzerliği";
 }
 
@@ -78,6 +81,222 @@ function normalizeForMatch(text) {
     .replace(/\s+/g, " ");
 }
 
+function parseRoomStats(roomText) {
+  const normalized = normalizeForMatch(roomText || "");
+  if (!normalized) {
+    return { bedrooms: null, livingRooms: null, total: null };
+  }
+  const plus = normalized.match(/([0-9]+(?:[.,][0-9]+)?)\s*\+\s*([0-9]+(?:[.,][0-9]+)?)/);
+  if (plus) {
+    const bedrooms = Number(plus[1].replace(",", "."));
+    const livingRooms = Number(plus[2].replace(",", "."));
+    return {
+      bedrooms: Number.isFinite(bedrooms) ? bedrooms : null,
+      livingRooms: Number.isFinite(livingRooms) ? livingRooms : null,
+      total: Number.isFinite(bedrooms) && Number.isFinite(livingRooms) ? bedrooms + livingRooms : null
+    };
+  }
+  const single = normalized.match(/([0-9]+(?:[.,][0-9]+)?)/);
+  if (single) {
+    const total = Number(single[1].replace(",", "."));
+    return { bedrooms: null, livingRooms: null, total: Number.isFinite(total) ? total : null };
+  }
+  return { bedrooms: null, livingRooms: null, total: null };
+}
+
+function parseBuildingAgeYears(ageText) {
+  const normalized = normalizeForMatch(ageText || "");
+  if (!normalized) {
+    return null;
+  }
+  if (
+    normalized.includes("sifir") ||
+    normalized.includes("yeni bina") ||
+    normalized === "0" ||
+    normalized === "0 yas"
+  ) {
+    return 0;
+  }
+  const range = normalized.match(/([0-9]{1,2})\s*-\s*([0-9]{1,2})/);
+  if (range) {
+    const min = Number(range[1]);
+    const max = Number(range[2]);
+    if (Number.isFinite(min) && Number.isFinite(max)) {
+      return (min + max) / 2;
+    }
+  }
+  const plus = normalized.match(/([0-9]{1,2})\s*(ve\s*uzeri|uzeri|ustu|ustunde)/);
+  if (plus) {
+    const start = Number(plus[1]);
+    if (Number.isFinite(start)) {
+      return start + 5;
+    }
+  }
+  const single = normalized.match(/([0-9]{1,2})/);
+  if (single) {
+    const age = Number(single[1]);
+    return Number.isFinite(age) ? age : null;
+  }
+  return null;
+}
+
+function parseFloorCategory(floorText) {
+  const normalized = normalizeForMatch(floorText || "");
+  if (!normalized) {
+    return "unknown";
+  }
+  if (normalized.includes("bodrum")) {
+    return "basement";
+  }
+  if (normalized.includes("zemin") || normalized.includes("giris") || normalized.includes("bahce")) {
+    return "ground";
+  }
+  if (normalized.includes("cati") || normalized.includes("teras") || normalized.includes("en ust") || normalized.includes("son kat")) {
+    return "top";
+  }
+  if (normalized.includes("ara kat")) {
+    return "middle";
+  }
+  const numericFloor = normalized.match(/([0-9]{1,2})\s*\.?\s*kat|([0-9]{1,2})kat/);
+  if (numericFloor) {
+    const level = Number(numericFloor[1] || numericFloor[2]);
+    if (Number.isFinite(level) && level <= 0) {
+      return "ground";
+    }
+    if (Number.isFinite(level) && level >= 1) {
+      return "middle";
+    }
+  }
+  return "unknown";
+}
+
+function floorDesirabilityScore(category) {
+  if (category === "middle") {
+    return 1;
+  }
+  if (category === "top") {
+    return 0.66;
+  }
+  if (category === "ground") {
+    return 0.55;
+  }
+  if (category === "basement") {
+    return 0.3;
+  }
+  return 0.6;
+}
+
+function floorSimilarity(targetCategory, compCategory) {
+  if (!targetCategory || !compCategory) {
+    return 0.5;
+  }
+  if (targetCategory === compCategory) {
+    return 1;
+  }
+  if (targetCategory === "unknown" || compCategory === "unknown") {
+    return 0.6;
+  }
+  if (
+    (targetCategory === "middle" && compCategory === "top") ||
+    (targetCategory === "top" && compCategory === "middle")
+  ) {
+    return 0.7;
+  }
+  if (
+    (targetCategory === "middle" && compCategory === "ground") ||
+    (targetCategory === "ground" && compCategory === "middle")
+  ) {
+    return 0.62;
+  }
+  if (
+    (targetCategory === "top" && compCategory === "ground") ||
+    (targetCategory === "ground" && compCategory === "top")
+  ) {
+    return 0.5;
+  }
+  return 0.35;
+}
+
+function sizeDesirabilityScore(sqm) {
+  if (!Number.isFinite(sqm) || sqm <= 0) {
+    return 0.5;
+  }
+  return clamp((sqm - 45) / 110, 0, 1);
+}
+
+function newnessScore(ageYears) {
+  if (!Number.isFinite(ageYears) || ageYears < 0) {
+    return 0.5;
+  }
+  return clamp(1 - ageYears / 30, 0.1, 1);
+}
+
+function ageSimilarity(targetAgeYears, compAgeYears) {
+  if (!Number.isFinite(targetAgeYears) || !Number.isFinite(compAgeYears)) {
+    return 0.55;
+  }
+  return clamp(1 - Math.abs(targetAgeYears - compAgeYears) / 25, 0.1, 1);
+}
+
+function roomSimilarity(target, comp) {
+  if (target._normRoomCount && target._normRoomCount === comp._normRoomCount) {
+    return 1;
+  }
+  const t = target._roomTotal;
+  const c = comp._roomTotal;
+  if (Number.isFinite(t) && Number.isFinite(c)) {
+    const diff = Math.abs(t - c);
+    if (diff === 0) {
+      return 0.85;
+    }
+    if (diff <= 1) {
+      return 0.66;
+    }
+    if (diff <= 2) {
+      return 0.45;
+    }
+    return 0.25;
+  }
+  return 0.45;
+}
+
+function neighborhoodSimilarity(target, comp) {
+  if (target._normNeighborhood && comp._normNeighborhood && target._normNeighborhood === comp._normNeighborhood) {
+    return 1;
+  }
+  if (target._normNeighborhood && comp._normNeighborhood) {
+    return 0.45;
+  }
+  return 0.35;
+}
+
+function sqmSimilarity(targetSqm, compSqm) {
+  if (!Number.isFinite(targetSqm) || !Number.isFinite(compSqm) || targetSqm <= 0 || compSqm <= 0) {
+    return 0;
+  }
+  const ratio = Math.min(targetSqm, compSqm) / Math.max(targetSqm, compSqm);
+  return clamp((ratio - 0.55) / 0.45, 0, 1);
+}
+
+function weightedMedian(rows) {
+  if (!rows.length) {
+    return null;
+  }
+  const sorted = [...rows].sort((a, b) => a.value - b.value);
+  const totalWeight = sorted.reduce((sum, row) => sum + row.weight, 0);
+  if (!(totalWeight > 0)) {
+    return null;
+  }
+  let cumulative = 0;
+  for (const row of sorted) {
+    cumulative += row.weight;
+    if (cumulative >= totalWeight / 2) {
+      return row.value;
+    }
+  }
+  return sorted[sorted.length - 1].value;
+}
+
 function median(values) {
   if (values.length === 0) {
     return null;
@@ -119,49 +338,95 @@ function pricePerSqm(row) {
 function withPrecomputed(row) {
   const sqm = effectiveSqm(row);
   const psm = pricePerSqm(row);
+  const roomStats = parseRoomStats(row.roomCount || "");
+  const buildingAgeYears = parseBuildingAgeYears(row.buildingAge || "");
+  const floorCategory = parseFloorCategory(row.floorInfo || "");
+  const floorScore = floorDesirabilityScore(floorCategory);
+  const sizeScore = sizeDesirabilityScore(sqm);
+  const freshnessScore = newnessScore(buildingAgeYears);
+  const qualityScore = clamp(0.35 * sizeScore + 0.35 * freshnessScore + 0.3 * floorScore, 0, 1);
+
   return {
     ...row,
     _normNeighborhood: normalizeForMatch(row.neighborhood || ""),
     _normRoomCount: normalizeForMatch(row.roomCount || ""),
     _effectiveSqm: sqm,
-    _pricePerSqm: psm
+    _pricePerSqm: psm,
+    _roomTotal: roomStats.total,
+    _buildingAgeYears: buildingAgeYears,
+    _floorCategory: floorCategory,
+    _floorScore: floorScore,
+    _sizeScore: sizeScore,
+    _freshnessScore: freshnessScore,
+    _qualityScore: qualityScore
   };
-}
-
-function sqmComparable(a, b, minRatio, maxRatio) {
-  if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0) {
-    return false;
-  }
-  const ratio = a >= b ? a / b : b / a;
-  return ratio <= maxRatio && ratio >= minRatio;
 }
 
 function pickComparables(target, rows, minComps) {
   const candidates = rows.filter((x) => x.listingKey !== target.listingKey && Number.isFinite(x._pricePerSqm));
-  const sameNeighborhoodRoom = candidates.filter(
-    (x) =>
-      x._normNeighborhood &&
-      x._normNeighborhood === target._normNeighborhood &&
-      x._normRoomCount &&
-      x._normRoomCount === target._normRoomCount &&
-      sqmComparable(target._effectiveSqm, x._effectiveSqm, 1, 1.35)
-  );
-  if (sameNeighborhoodRoom.length >= minComps) {
-    return { bucket: "neighborhood+room", comps: sameNeighborhoodRoom };
+  const scored = [];
+
+  for (const comp of candidates) {
+    const roomSim = roomSimilarity(target, comp);
+    const neighborhoodSim = neighborhoodSimilarity(target, comp);
+    const sqmSim = sqmSimilarity(target._effectiveSqm, comp._effectiveSqm);
+    const ageSim = ageSimilarity(target._buildingAgeYears, comp._buildingAgeYears);
+    const floorSim = floorSimilarity(target._floorCategory, comp._floorCategory);
+    const similarityScore = clamp(
+      0.34 * sqmSim + 0.24 * roomSim + 0.18 * neighborhoodSim + 0.14 * ageSim + 0.1 * floorSim,
+      0,
+      1
+    );
+
+    if (similarityScore < 0.28) {
+      continue;
+    }
+
+    const qualityGap = target._qualityScore - comp._qualityScore;
+    const adjustedPricePerSqm = comp._pricePerSqm * (1 + qualityGap * 0.18);
+
+    scored.push({
+      ...comp,
+      _similarity: similarityScore,
+      _roomSim: roomSim,
+      _neighborhoodSim: neighborhoodSim,
+      _sqmSim: sqmSim,
+      _ageSim: ageSim,
+      _floorSim: floorSim,
+      _adjustedPricePerSqm: adjustedPricePerSqm
+    });
   }
 
-  const sameDistrictRoom = candidates.filter(
-    (x) =>
-      x._normRoomCount &&
-      x._normRoomCount === target._normRoomCount &&
-      sqmComparable(target._effectiveSqm, x._effectiveSqm, 1, 1.4)
-  );
-  if (sameDistrictRoom.length >= minComps) {
-    return { bucket: "district+room", comps: sameDistrictRoom };
+  scored.sort((a, b) => b._similarity - a._similarity);
+  const picked = scored.slice(0, Math.min(80, scored.length));
+
+  let neighborhoodRoomMatches = 0;
+  let roomMatches = 0;
+  for (const row of picked) {
+    const sameRoom = row._normRoomCount && row._normRoomCount === target._normRoomCount;
+    const sameNeighborhood = row._normNeighborhood && row._normNeighborhood === target._normNeighborhood;
+    if (sameRoom) {
+      roomMatches += 1;
+    }
+    if (sameRoom && sameNeighborhood) {
+      neighborhoodRoomMatches += 1;
+    }
   }
 
-  const sameDistrictAnyRoom = candidates.filter((x) => sqmComparable(target._effectiveSqm, x._effectiveSqm, 1, 1.45));
-  return { bucket: "district+sqm", comps: sameDistrictAnyRoom };
+  const pickedCount = picked.length || 1;
+  const neighborhoodRoomRatio = neighborhoodRoomMatches / pickedCount;
+  const roomRatio = roomMatches / pickedCount;
+
+  let bucket = "district+multifactor";
+  if (neighborhoodRoomRatio >= 0.5) {
+    bucket = "neighborhood+room";
+  } else if (roomRatio >= 0.5) {
+    bucket = "district+room";
+  } else if (picked.length < minComps) {
+    bucket = "district+sqm";
+  }
+
+  return { bucket, comps: picked };
 }
 
 function scoreDeal(target, rows, opts) {
@@ -175,18 +440,26 @@ function scoreDeal(target, rows, opts) {
     return null;
   }
 
-  const compPsm = comps.map((x) => x._pricePerSqm).filter((x) => Number.isFinite(x));
-  if (compPsm.length < opts.minComps) {
+  const compAdjustedPsmRows = comps
+    .map((x) => ({
+      value: x._adjustedPricePerSqm,
+      weight: 0.12 + Math.pow(x._similarity, 2) * 1.9
+    }))
+    .filter((x) => Number.isFinite(x.value) && Number.isFinite(x.weight) && x.weight > 0);
+  if (compAdjustedPsmRows.length < opts.minComps) {
     return null;
   }
 
-  const compMedian = median(compPsm);
+  const compMedian = weightedMedian(compAdjustedPsmRows);
   if (!Number.isFinite(compMedian) || compMedian <= 0) {
     return null;
   }
 
-  const dispersionMad = medianAbsDeviation(compPsm, compMedian);
+  const compPsmForDispersion = compAdjustedPsmRows.map((x) => x.value);
+  const dispersionMad = medianAbsDeviation(compPsmForDispersion, compMedian);
   const dispersionRatio = dispersionMad == null ? 1 : clamp(dispersionMad / compMedian, 0, 1);
+  const avgSimilarity =
+    comps.reduce((sum, row) => sum + (Number.isFinite(row._similarity) ? row._similarity : 0), 0) / Math.max(1, comps.length);
 
   let fairPrice = compMedian * target._effectiveSqm;
   if (Number.isFinite(target.avgPriceForSale) && target.avgPriceForSale > 0) {
@@ -198,8 +471,14 @@ function scoreDeal(target, rows, opts) {
   }
 
   const discountPct = (fairPrice - target.priceTl) / fairPrice;
-  const confidence = clamp((comps.length / 20) * clamp(1 - dispersionRatio, 0.15, 1), 0, 1);
-  const score = discountPct * confidence;
+  const confidence = clamp(
+    (Math.min(comps.length, 40) / 40) * clamp(1 - dispersionRatio, 0.18, 1) * clamp(avgSimilarity, 0.3, 1),
+    0,
+    1
+  );
+  const livabilityQuality = clamp(target._qualityScore, 0, 1);
+  const qualityMultiplier = 0.8 + livabilityQuality * 0.4;
+  let score = discountPct * confidence * qualityMultiplier;
   const pricePerSqmGapPct = (compMedian - target._pricePerSqm) / compMedian;
 
   let endeksaMidPrice = null;
@@ -209,6 +488,9 @@ function scoreDeal(target, rows, opts) {
     endeksaMidPrice = target.avgPriceForSale;
   }
   const discountVsEndeksa = endeksaMidPrice && endeksaMidPrice > 0 ? (endeksaMidPrice - target.priceTl) / endeksaMidPrice : null;
+  if (Number.isFinite(discountVsEndeksa) && discountVsEndeksa > 0) {
+    score *= 1 + clamp(discountVsEndeksa, 0, 0.2) * 0.35;
+  }
 
   return {
     source: target.source,
@@ -233,6 +515,8 @@ function scoreDeal(target, rows, opts) {
     comparableCount: comps.length,
     comparableBucket: picked.bucket,
     dispersionRatio,
+    averageComparableSimilarity: avgSimilarity,
+    qualityMultiplier,
     avgPriceForSale: target.avgPriceForSale || null,
     endeksaMinPrice: target.endeksaMinPrice || null,
     endeksaMaxPrice: target.endeksaMaxPrice || null,
@@ -246,6 +530,14 @@ function scoreDeal(target, rows, opts) {
       usedSqmType: Number.isFinite(target.netSqm) && target.netSqm > 0 ? "net" : "gross",
       roomCount: target.roomCount || null,
       neighborhood: target.neighborhood || null,
+      buildingAgeRaw: target.buildingAge || null,
+      buildingAgeYears: target._buildingAgeYears,
+      floorRaw: target.floorInfo || null,
+      floorCategory: target._floorCategory,
+      sizeScore: target._sizeScore,
+      freshnessScore: target._freshnessScore,
+      floorScore: target._floorScore,
+      livabilityQuality,
       listingPricePerSqm: target._pricePerSqm,
       comparableMedianPricePerSqm: compMedian,
       pricePerSqmGapPct,
@@ -254,6 +546,8 @@ function scoreDeal(target, rows, opts) {
       discountPct,
       confidence,
       dispersionRatio,
+      averageComparableSimilarity: avgSimilarity,
+      qualityMultiplier,
       blendedWithAvgPriceForSale: Number.isFinite(target.avgPriceForSale) && target.avgPriceForSale > 0,
       avgPriceForSale: target.avgPriceForSale || null,
       endeksaMidPrice,
@@ -337,6 +631,18 @@ export async function onRequestGet(context) {
   return json({
     ok: true,
     area: { city: areaCity, district: areaDistrict },
+    model: {
+      version: "v2-multifactor",
+      factors: [
+        "m2 benzerliği",
+        "oda benzerliği",
+        "mahalle benzerliği",
+        "bina yaşı",
+        "kat tercihi",
+        "emsal benzerlik güveni",
+        "Endeksa karşılaştırması"
+      ]
+    },
     params: { limit, minDiscount, minConfidence, minComps },
     totals: {
       activeListings: rows.length,
