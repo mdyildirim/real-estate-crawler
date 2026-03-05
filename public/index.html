@@ -129,6 +129,34 @@
         color: var(--bad-text);
       }
 
+      .hint.loading {
+        position: relative;
+        padding-left: 2.2rem;
+      }
+
+      .hint.loading::before {
+        content: "";
+        position: absolute;
+        left: 0.8rem;
+        top: 0.95rem;
+        width: 0.9rem;
+        height: 0.9rem;
+        border-radius: 999px;
+        border: 2px solid currentColor;
+        border-right-color: transparent;
+        animation: spin 0.85s linear infinite;
+        opacity: 0.8;
+      }
+
+      @keyframes spin {
+        from {
+          transform: rotate(0deg);
+        }
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
       .stats {
         display: grid;
         gap: 0.7rem;
@@ -384,7 +412,7 @@
 
         <button id="startBtn">TARAMAYI BAŞLAT</button>
         <div id="status" class="hint ok">Hazır. Bölgeyi seçip butona basın.</div>
-        <p class="muted tiny">Not: Tarama genelde 2-4 dakika sürer. Beklerken sayfayı kapatmayın.</p>
+        <p class="muted tiny">Not: Tarama genelde 2-4 dakika sürer. Seçiminiz yenilemede korunur, sonuçlar otomatik güncellenir.</p>
       </section>
 
       <section class="card">
@@ -454,10 +482,17 @@
       let autoTimer = null;
       let backtestCache = { key: "", fetchedAt: 0, report: null };
       const BACKTEST_CACHE_MS = 5 * 60 * 1000;
+      const AREA_PREFS_KEY = "real-estate:last-area:v1";
+      const PENDING_SCAN_KEY = "real-estate:pending-scan:v1";
+      const PENDING_SCAN_MAX_AGE_MS = 25 * 60 * 1000;
+      let pendingScanState = null;
 
-      function setStatus(text, isError = false) {
+      function setStatus(text, isError = false, options = {}) {
         statusEl.textContent = text;
         statusEl.className = isError ? "hint bad" : "hint ok";
+        if (!isError && options?.loading) {
+          statusEl.classList.add("loading");
+        }
       }
 
       function normalizeForMatch(text) {
@@ -597,6 +632,140 @@
         };
       }
 
+      function safeStorageGet(key) {
+        try {
+          return localStorage.getItem(key);
+        } catch {
+          return null;
+        }
+      }
+
+      function safeStorageSet(key, value) {
+        try {
+          localStorage.setItem(key, value);
+        } catch {
+          // Ignore quota / privacy mode errors.
+        }
+      }
+
+      function safeStorageRemove(key) {
+        try {
+          localStorage.removeItem(key);
+        } catch {
+          // Ignore storage errors.
+        }
+      }
+
+      function readAreaPrefs() {
+        const raw = safeStorageGet(AREA_PREFS_KEY);
+        if (!raw) {
+          return { lastCountry: "TR", byCountry: {} };
+        }
+        try {
+          const parsed = JSON.parse(raw);
+          const byCountry = parsed?.byCountry && typeof parsed.byCountry === "object" ? parsed.byCountry : {};
+          const lastCountry = String(parsed?.lastCountry || "TR").toUpperCase();
+          return { lastCountry: COUNTRY_CONFIG[lastCountry] ? lastCountry : "TR", byCountry };
+        } catch {
+          return { lastCountry: "TR", byCountry: {} };
+        }
+      }
+
+      function writeAreaPrefs(prefs) {
+        safeStorageSet(AREA_PREFS_KEY, JSON.stringify(prefs));
+      }
+
+      function preferredAreaForCountry(country) {
+        const code = COUNTRY_CONFIG[country] ? country : "TR";
+        const prefs = readAreaPrefs();
+        const area = prefs.byCountry?.[code];
+        return area && typeof area === "object" ? area : null;
+      }
+
+      function persistSelectedArea() {
+        const area = selectedArea();
+        const prefs = readAreaPrefs();
+        prefs.lastCountry = area.country;
+        prefs.byCountry = prefs.byCountry && typeof prefs.byCountry === "object" ? prefs.byCountry : {};
+        prefs.byCountry[area.country] = {
+          city: area.city,
+          district: area.district,
+          citySlug: area.citySlug,
+          districtSlug: area.districtSlug
+        };
+        writeAreaPrefs(prefs);
+      }
+
+      function readPendingScan() {
+        const raw = safeStorageGet(PENDING_SCAN_KEY);
+        if (!raw) {
+          return null;
+        }
+        try {
+          const parsed = JSON.parse(raw);
+          const startedAt = Date.parse(parsed?.startedAt || "");
+          if (!Number.isFinite(startedAt) || Date.now() - startedAt > PENDING_SCAN_MAX_AGE_MS) {
+            safeStorageRemove(PENDING_SCAN_KEY);
+            return null;
+          }
+          const country = COUNTRY_CONFIG[String(parsed?.country || "").toUpperCase()]
+            ? String(parsed.country).toUpperCase()
+            : "TR";
+          const city = String(parsed?.city || "").trim();
+          const district = String(parsed?.district || "").trim();
+          if (!city || !district) {
+            safeStorageRemove(PENDING_SCAN_KEY);
+            return null;
+          }
+          return { country, city, district, startedAt: new Date(startedAt).toISOString() };
+        } catch {
+          safeStorageRemove(PENDING_SCAN_KEY);
+          return null;
+        }
+      }
+
+      function savePendingScan(area) {
+        pendingScanState = {
+          country: area.country,
+          city: area.city,
+          district: area.district,
+          startedAt: new Date().toISOString()
+        };
+        safeStorageSet(PENDING_SCAN_KEY, JSON.stringify(pendingScanState));
+      }
+
+      function clearPendingScan() {
+        pendingScanState = null;
+        safeStorageRemove(PENDING_SCAN_KEY);
+      }
+
+      function areasEqual(a, b) {
+        if (!a || !b) {
+          return false;
+        }
+        return (
+          normalizeForMatch(a.country) === normalizeForMatch(b.country) &&
+          normalizeForMatch(a.city) === normalizeForMatch(b.city) &&
+          normalizeForMatch(a.district) === normalizeForMatch(b.district)
+        );
+      }
+
+      function pendingScanForSelectedArea() {
+        return pendingScanState && areasEqual(selectedArea(), pendingScanState);
+      }
+
+      function renderPendingScanStatus() {
+        if (!pendingScanForSelectedArea()) {
+          statusEl.classList.remove("loading");
+          return;
+        }
+        setStatus(
+          "Tarama sürüyor.\nSayfayı yenileseniz de bu bölge korunur.\nSonuçlar otomatik yenileniyor...",
+          false,
+          { loading: true }
+        );
+      }
+
       function normalizeLocationData(items) {
         return (Array.isArray(items) ? items : [])
           .map((item) => {
@@ -667,7 +836,7 @@
         }
       }
 
-      async function loadLocations() {
+      async function loadLocations(preferredArea = null) {
         const country = countryEl.value || "TR";
         const cfg = COUNTRY_CONFIG[country] || COUNTRY_CONFIG.TR;
         const res = await fetch(cfg.locationsPath);
@@ -691,14 +860,32 @@
         const defaultCityName = bodyDefaults.city || cfg.defaults.city || "";
         const defaultDistrictName = bodyDefaults.district || cfg.defaults.district || "";
         const defaultDistrictSlug = bodyDefaults.districtSlug || bodyDefaults.district_slug || "";
+        const preferredCityName = String(preferredArea?.city || "");
+        const preferredCitySlug = String(preferredArea?.citySlug || preferredArea?.city_slug || "");
+        const preferredDistrictName = String(preferredArea?.district || "");
+        const preferredDistrictSlug = String(preferredArea?.districtSlug || preferredArea?.district_slug || "");
 
         const defaultCity = pickByNormalized(
           locationData.map((x) => x.city),
           defaultCityName
         ) || locationData[0]?.city;
+        const preferredCityBySlug = preferredCitySlug
+          ? locationData.find((x) => normalizeForMatch(x.citySlug) === normalizeForMatch(preferredCitySlug))
+          : null;
+        const preferredCityByName = preferredCityName
+          ? pickByNormalized(
+              locationData.map((x) => x.city),
+              preferredCityName
+            )
+          : null;
+        const targetCity = preferredCityBySlug?.city || preferredCityByName || defaultCity || "";
 
-        cityEl.value = defaultCity || "";
-        fillDistricts(cityEl.value, defaultDistrictName, defaultDistrictSlug);
+        cityEl.value = targetCity;
+        fillDistricts(
+          cityEl.value,
+          preferredDistrictName || defaultDistrictName,
+          preferredDistrictSlug || defaultDistrictSlug
+        );
       }
 
       function renderPerfBadgeLoading() {
@@ -886,6 +1073,21 @@
 
         const run = (body.runs || [])[0];
         lastRunEl.textContent = run ? fmtDate(run.startedAt) : "-";
+
+        if (pendingScanForSelectedArea()) {
+          const runStartedAt = Date.parse(run?.startedAt || "");
+          const pendingStartedAt = Date.parse(pendingScanState?.startedAt || "");
+          const completedNewRun =
+            Number.isFinite(runStartedAt) &&
+            Number.isFinite(pendingStartedAt) &&
+            runStartedAt >= pendingStartedAt - 45 * 1000;
+          if (completedNewRun) {
+            clearPendingScan();
+            setStatus("Tarama tamamlandı. Sonuçlar güncellendi.");
+          } else {
+            renderPendingScanStatus();
+          }
+        }
       }
 
       async function fetchDeals() {
@@ -1140,7 +1342,9 @@
 
         startBtn.disabled = true;
         try {
-          setStatus(`Tarama başlatılıyor...\nBölge: ${country} / ${city} / ${district}`);
+          setStatus(`Tarama başlatılıyor...\nBölge: ${country} / ${city} / ${district}`, false, {
+            loading: true
+          });
 
           let res = await fetch("/api/crawl-request", {
             method: "POST",
@@ -1165,9 +1369,17 @@
             throw new Error(body?.error || parsed.text.slice(0, 240) || `HTTP ${res.status}`);
           }
 
-          setStatus("Tarama başladı.\nLütfen 2-4 dakika bekleyin.\nSonuçlar bu sayfaya otomatik düşecek.");
+          persistSelectedArea();
+          savePendingScan({ country, city, district });
+          setStatus(
+            "Tarama başladı.\nLütfen 2-4 dakika bekleyin.\nSonuçlar bu sayfaya otomatik düşecek.",
+            false,
+            { loading: true }
+          );
           await refreshSnapshot({ includeBacktest: true, forceBacktest: true });
+          renderPendingScanStatus();
         } catch (error) {
+          clearPendingScan();
           setStatus(`Başlatılamadı: ${String(error.message || error)}`, true);
         } finally {
           startBtn.disabled = false;
@@ -1176,18 +1388,26 @@
 
       cityEl.addEventListener("change", () => {
         fillDistricts(cityEl.value);
+        persistSelectedArea();
+        renderPendingScanStatus();
         refreshSnapshot({ includeBacktest: true, forceBacktest: true }).catch((error) =>
           setStatus(`Veri alınamadı: ${String(error.message || error)}`, true)
         );
       });
 
       countryEl.addEventListener("change", () => {
-        loadLocations()
-          .then(() => refreshSnapshot({ includeBacktest: true, forceBacktest: true }))
+        loadLocations(preferredAreaForCountry(countryEl.value))
+          .then(() => {
+            persistSelectedArea();
+            renderPendingScanStatus();
+            return refreshSnapshot({ includeBacktest: true, forceBacktest: true });
+          })
           .catch((error) => setStatus(`Veri alınamadı: ${String(error.message || error)}`, true));
       });
 
       districtEl.addEventListener("change", () => {
+        persistSelectedArea();
+        renderPendingScanStatus();
         refreshSnapshot({ includeBacktest: true, forceBacktest: true }).catch((error) =>
           setStatus(`Veri alınamadı: ${String(error.message || error)}`, true)
         );
@@ -1200,11 +1420,18 @@
       (async function bootstrap() {
         try {
           populateCountrySelect();
-          countryEl.value = "TR";
-          await loadLocations();
+          pendingScanState = readPendingScan();
+          const prefs = readAreaPrefs();
+          countryEl.value = COUNTRY_CONFIG[prefs.lastCountry] ? prefs.lastCountry : "TR";
+          await loadLocations(preferredAreaForCountry(countryEl.value));
+          persistSelectedArea();
           await refreshSnapshot({ includeBacktest: true, forceBacktest: true });
           startAutoRefresh();
-          setStatus("Hazır. Sadece bölgeyi seçip 'TARAMAYI BAŞLAT' butonuna basın.");
+          if (pendingScanForSelectedArea()) {
+            renderPendingScanStatus();
+          } else {
+            setStatus("Hazır. Sadece bölgeyi seçip 'TARAMAYI BAŞLAT' butonuna basın.");
+          }
         } catch (error) {
           setStatus(`Açılış hatası: ${String(error.message || error)}`, true);
         }
