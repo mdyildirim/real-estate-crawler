@@ -155,6 +155,58 @@
         font-weight: 800;
       }
 
+      .perf-badge {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 0.85rem;
+        background: #f8fbff;
+      }
+
+      .perf-badge .t {
+        font-size: 0.92rem;
+        font-weight: 800;
+        color: #274164;
+      }
+
+      .perf-badge .m {
+        margin-top: 0.25rem;
+        font-size: 1.4rem;
+        font-weight: 800;
+      }
+
+      .perf-badge .s {
+        margin-top: 0.2rem;
+        font-size: 0.9rem;
+        color: #3f5573;
+      }
+
+      .perf-badge.good {
+        background: #ecfff4;
+        border-color: #bdeed0;
+      }
+
+      .perf-badge.good .m {
+        color: #17643d;
+      }
+
+      .perf-badge.flat {
+        background: #f0f7ff;
+        border-color: #cfe2ff;
+      }
+
+      .perf-badge.flat .m {
+        color: #1652a5;
+      }
+
+      .perf-badge.bad {
+        background: #fff1f4;
+        border-color: #ffd0d9;
+      }
+
+      .perf-badge.bad .m {
+        color: #a2143a;
+      }
+
       .deal-list {
         display: grid;
         gap: 0.7rem;
@@ -294,6 +346,14 @@
       </section>
 
       <section class="card">
+        <div id="perfBadge" class="perf-badge flat">
+          <div class="t">Akıllı sıralama avantajı</div>
+          <div id="perfMain" class="m">Hesaplanıyor...</div>
+          <div id="perfSub" class="s">Sadece fiyata göre sıralama ile karşılaştırılıyor.</div>
+        </div>
+      </section>
+
+      <section class="card">
         <h2 style="margin: 0 0 0.5rem">En Uygun 10 İlan</h2>
         <div id="dealList" class="deal-list"></div>
         <details class="logs">
@@ -311,11 +371,16 @@
       const lastRunEl = document.getElementById("lastRun");
       const activeCountEl = document.getElementById("activeCount");
       const dealCountEl = document.getElementById("dealCount");
+      const perfBadgeEl = document.getElementById("perfBadge");
+      const perfMainEl = document.getElementById("perfMain");
+      const perfSubEl = document.getElementById("perfSub");
       const dealListEl = document.getElementById("dealList");
       const logListEl = document.getElementById("logList");
 
       let locationData = [];
       let autoTimer = null;
+      let backtestCache = { key: "", fetchedAt: 0, report: null };
+      const BACKTEST_CACHE_MS = 5 * 60 * 1000;
 
       function setStatus(text, isError = false) {
         statusEl.textContent = text;
@@ -402,6 +467,16 @@
         return `%${(n * 100).toFixed(1)}`;
       }
 
+      function fmtSignedPctFromLift(liftValue) {
+        const n = Number(liftValue);
+        if (!Number.isFinite(n) || n <= 0) {
+          return null;
+        }
+        const pct = (n - 1) * 100;
+        const sign = pct >= 0 ? "+" : "-";
+        return `${sign}%${Math.abs(pct).toFixed(1)}`;
+      }
+
       function finiteOr(...values) {
         for (const value of values) {
           const n = Number(value);
@@ -428,6 +503,105 @@
           city: canonicalAreaName(cityEl.value, "Istanbul"),
           district: canonicalAreaName(districtEl.value, "Atasehir")
         };
+      }
+
+      function renderPerfBadgeLoading() {
+        perfBadgeEl.className = "perf-badge flat";
+        perfMainEl.textContent = "Hesaplanıyor...";
+        perfSubEl.textContent = "Sadece fiyata göre sıralama ile karşılaştırılıyor.";
+      }
+
+      function renderPerfBadgeFromReport(report) {
+        const meanLift = Number(report?.lift?.meanTruthDiscountAt20);
+        const ndcgLift = Number(report?.lift?.ndcgAt20);
+        const meanText = fmtSignedPctFromLift(meanLift);
+        const ndcgText = fmtSignedPctFromLift(ndcgLift);
+        const rows = Number(report?.sample?.scoringRows);
+
+        let selectedLift = null;
+        let basisText = "";
+        if (Number.isFinite(meanLift) && meanLift > 0) {
+          selectedLift = meanLift;
+          basisText = "Ölçüm: İlk 20 ilanda gerçek indirim.";
+        } else if (Number.isFinite(ndcgLift) && ndcgLift > 0) {
+          selectedLift = ndcgLift;
+          basisText = "Ölçüm: Sıralama kalitesi.";
+        }
+
+        if (!Number.isFinite(selectedLift) || selectedLift <= 0) {
+          perfBadgeEl.className = "perf-badge flat";
+          perfMainEl.textContent = "Ölçüm verisi yok";
+          perfSubEl.textContent = "Bu bölge için karşılaştırma henüz oluşmadı.";
+          return;
+        }
+
+        const deltaPct = (selectedLift - 1) * 100;
+        if (deltaPct >= 5) {
+          perfBadgeEl.className = "perf-badge good";
+        } else if (deltaPct <= -5) {
+          perfBadgeEl.className = "perf-badge bad";
+        } else {
+          perfBadgeEl.className = "perf-badge flat";
+        }
+
+        const selectedText = fmtSignedPctFromLift(selectedLift) || "+%0.0";
+        perfMainEl.textContent = `${selectedText} daha iyi fırsat sıralaması`;
+
+        const parts = [
+          "Karşılaştırma: sadece fiyata göre sıralama.",
+          basisText
+        ];
+        if (meanText && ndcgText) {
+          parts.push(`Gerçek indirim: ${meanText} | Sıralama kalitesi: ${ndcgText}.`);
+        } else if (meanText) {
+          parts.push(`Gerçek indirim farkı: ${meanText}.`);
+        } else if (ndcgText) {
+          parts.push(`Sıralama kalite farkı: ${ndcgText}.`);
+        }
+        if (Number.isFinite(rows) && rows > 0) {
+          parts.push(`Test veri adedi: ${fmtInt(rows)} ilan.`);
+        }
+        perfSubEl.textContent = parts.join(" ");
+      }
+
+      async function fetchBacktestSummary(force = false) {
+        const { city, district } = selectedArea();
+        const cacheKey = `${city}|${district}`;
+        const now = Date.now();
+
+        if (
+          !force &&
+          backtestCache.key === cacheKey &&
+          backtestCache.report &&
+          now - backtestCache.fetchedAt < BACKTEST_CACHE_MS
+        ) {
+          renderPerfBadgeFromReport(backtestCache.report);
+          return;
+        }
+
+        renderPerfBadgeLoading();
+
+        const params = new URLSearchParams({
+          city,
+          district,
+          folds: "5",
+          min_comps: "6",
+          strict_same_neighborhood: "1",
+          min_same_neighborhood_comps: "3"
+        });
+
+        const res = await fetch(`/api/backtest?${params.toString()}`);
+        const body = await res.json();
+        if (!res.ok || !body?.report) {
+          throw new Error(body?.error || `HTTP ${res.status}`);
+        }
+
+        backtestCache = {
+          key: cacheKey,
+          fetchedAt: now,
+          report: body.report
+        };
+        renderPerfBadgeFromReport(body.report);
       }
 
       function escHtml(value) {
@@ -655,8 +829,20 @@
         }
       }
 
-      async function refreshSnapshot() {
-        await Promise.all([fetchRunInfo(), fetchDeals(), fetchLogs()]);
+      async function refreshSnapshot(opts = {}) {
+        const includeBacktest = Boolean(opts.includeBacktest);
+        const forceBacktest = Boolean(opts.forceBacktest);
+        const jobs = [fetchRunInfo(), fetchDeals(), fetchLogs()];
+        if (includeBacktest) {
+          jobs.push(
+            fetchBacktestSummary(forceBacktest).catch(() => {
+              perfBadgeEl.className = "perf-badge bad";
+              perfMainEl.textContent = "Ölçüm alınamadı";
+              perfSubEl.textContent = "Model karşılaştırması şu an okunamadı. Birazdan tekrar denenecek.";
+            })
+          );
+        }
+        await Promise.all(jobs);
       }
 
       function startAutoRefresh() {
@@ -689,7 +875,7 @@
           }
 
           setStatus("Tarama başladı.\nLütfen 2-4 dakika bekleyin.\nSonuçlar bu sayfaya otomatik düşecek.");
-          await refreshSnapshot();
+          await refreshSnapshot({ includeBacktest: true, forceBacktest: true });
         } catch (error) {
           setStatus(`Başlatılamadı: ${String(error.message || error)}`, true);
         } finally {
@@ -699,11 +885,15 @@
 
       cityEl.addEventListener("change", () => {
         fillDistricts(cityEl.value);
-        refreshSnapshot().catch((error) => setStatus(`Veri alınamadı: ${String(error.message || error)}`, true));
+        refreshSnapshot({ includeBacktest: true, forceBacktest: true }).catch((error) =>
+          setStatus(`Veri alınamadı: ${String(error.message || error)}`, true)
+        );
       });
 
       districtEl.addEventListener("change", () => {
-        refreshSnapshot().catch((error) => setStatus(`Veri alınamadı: ${String(error.message || error)}`, true));
+        refreshSnapshot({ includeBacktest: true, forceBacktest: true }).catch((error) =>
+          setStatus(`Veri alınamadı: ${String(error.message || error)}`, true)
+        );
       });
 
       startBtn.addEventListener("click", () => {
@@ -713,7 +903,7 @@
       (async function bootstrap() {
         try {
           await loadLocations();
-          await refreshSnapshot();
+          await refreshSnapshot({ includeBacktest: true, forceBacktest: true });
           startAutoRefresh();
           setStatus("Hazır. Sadece bölgeyi seçip 'TARAMAYI BAŞLAT' butonuna basın.");
         } catch (error) {
