@@ -9,6 +9,9 @@ function json(data, status = 200) {
 }
 
 function toInt(value, fallback) {
+  if (value == null || value === "") {
+    return fallback;
+  }
   const n = Number(value);
   if (!Number.isFinite(n)) {
     return fallback;
@@ -22,6 +25,20 @@ function toFloat(value, fallback) {
     return fallback;
   }
   return n;
+}
+
+function toBool(value, fallback) {
+  if (value == null) {
+    return fallback;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "evet"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "hayir", "hayır"].includes(normalized)) {
+    return false;
+  }
+  return fallback;
 }
 
 function clamp(n, min, max) {
@@ -556,6 +573,110 @@ function medianAbsDeviation(values, center) {
   return median(abs);
 }
 
+function computePsmBounds(rows) {
+  const psmValues = rows.map((row) => row._pricePerSqm).filter((value) => Number.isFinite(value) && value > 0);
+  if (psmValues.length < 16) {
+    return { low: 0, high: Number.POSITIVE_INFINITY };
+  }
+  const center = median(psmValues);
+  const mad = medianAbsDeviation(psmValues, center);
+  if (!Number.isFinite(center) || center <= 0) {
+    return { low: 0, high: Number.POSITIVE_INFINITY };
+  }
+
+  const ratioLow = center * 0.35;
+  const ratioHigh = center * 2.8;
+  if (!Number.isFinite(mad) || mad <= 0) {
+    return { low: Math.max(1000, ratioLow), high: ratioHigh };
+  }
+
+  const robustLow = center - 4 * mad;
+  const robustHigh = center + 4 * mad;
+  const low = Math.max(1000, Math.max(ratioLow, robustLow));
+  const high = Math.max(low * 1.2, Math.min(ratioHigh, robustHigh));
+  return { low, high };
+}
+
+function isApartmentLike(row) {
+  return row._assetClass === "daire" || row._assetClass === "residence";
+}
+
+function isOutlierListing(row, bounds) {
+  if (!Number.isFinite(row._pricePerSqm) || !Number.isFinite(row._effectiveSqm) || row._effectiveSqm <= 0) {
+    return true;
+  }
+  if (row._effectiveSqm < 20) {
+    return true;
+  }
+  if (isApartmentLike(row) && row._effectiveSqm < 35) {
+    return true;
+  }
+  if (isApartmentLike(row) && row._effectiveSqm > 350) {
+    return true;
+  }
+  if (Number.isFinite(bounds.low) && row._pricePerSqm < bounds.low) {
+    return true;
+  }
+  if (Number.isFinite(bounds.high) && row._pricePerSqm > bounds.high) {
+    return true;
+  }
+  return false;
+}
+
+function dedupeFingerprint(row) {
+  if (!row._normNeighborhood || !row._normRoomCount || !Number.isFinite(row._effectiveSqm) || !Number.isFinite(row._pricePerSqm)) {
+    return row.listingKey;
+  }
+  const sqmBucket = Math.round(row._effectiveSqm / 3);
+  const ageBucket = Number.isFinite(row._buildingAgeYears) ? Math.round(row._buildingAgeYears / 5) : "na";
+  const psmBucket = Math.round(row._pricePerSqm / 2000);
+  return [
+    row._normNeighborhood,
+    row._normRoomCount,
+    row._assetClass || "unknown",
+    row._floorCategory || "unknown",
+    row._deedCategory || "unknown",
+    sqmBucket,
+    ageBucket,
+    psmBucket
+  ].join("|");
+}
+
+function dedupeListings(rows) {
+  const clusters = new Map();
+  for (const row of rows) {
+    const key = dedupeFingerprint(row);
+    if (!clusters.has(key)) {
+      clusters.set(key, []);
+    }
+    clusters.get(key).push(row);
+  }
+
+  const deduped = [];
+  for (const clusterRows of clusters.values()) {
+    if (clusterRows.length === 1) {
+      deduped.push({ ...clusterRows[0], _dedupeClusterSize: 1 });
+      continue;
+    }
+    const sorted = [...clusterRows].sort((a, b) => a._pricePerSqm - b._pricePerSqm);
+    const chosen = sorted[Math.floor(sorted.length / 2)];
+    deduped.push({ ...chosen, _dedupeClusterSize: clusterRows.length });
+  }
+  return deduped;
+}
+
+function buildScoringUniverse(rows) {
+  const bounds = computePsmBounds(rows);
+  const filtered = rows.filter((row) => !isOutlierListing(row, bounds));
+  const deduped = dedupeListings(filtered);
+  return {
+    rows: deduped,
+    bounds,
+    filteredOut: rows.length - filtered.length,
+    dedupedOut: filtered.length - deduped.length
+  };
+}
+
 function effectiveSqm(row) {
   if (Number.isFinite(row.netSqm) && row.netSqm > 0) {
     return row.netSqm;
@@ -759,6 +880,13 @@ function scoreDeal(target, rows, opts) {
   if (comps.length < opts.minComps) {
     return null;
   }
+  if (
+    opts.strictSameNeighborhood &&
+    target._normNeighborhood &&
+    (picked.sameNeighborhoodComparableCount || 0) < opts.minSameNeighborhoodComps
+  ) {
+    return null;
+  }
 
   const compAdjustedPsmRows = comps
     .map((x) => ({
@@ -890,6 +1018,8 @@ function scoreDeal(target, rows, opts) {
       method: picked.bucket,
       methodLabel: bucketLabel(picked.bucket),
       comparableCount: comps.length,
+      minSameNeighborhoodComps: opts.minSameNeighborhoodComps,
+      strictSameNeighborhoodApplied: Boolean(opts.strictSameNeighborhood),
       neighborhoodFocused: Boolean(picked.neighborhoodFocused),
       sameNeighborhoodComparableCount: picked.sameNeighborhoodComparableCount || 0,
       effectiveSqm: target._effectiveSqm,
@@ -948,6 +1078,8 @@ export async function onRequestGet(context) {
   const minDiscount = clamp(toFloat(url.searchParams.get("min_discount"), 0.12), -0.5, 0.9);
   const minConfidence = clamp(toFloat(url.searchParams.get("min_confidence"), 0.35), 0, 1);
   const minComps = Math.max(3, Math.min(50, toInt(url.searchParams.get("min_comps"), 6)));
+  const strictSameNeighborhood = toBool(url.searchParams.get("strict_same_neighborhood"), true);
+  const minSameNeighborhoodComps = Math.max(1, Math.min(20, toInt(url.searchParams.get("min_same_neighborhood_comps"), 3)));
 
   const rowsRes = await DB.prepare(
     `
@@ -993,10 +1125,16 @@ export async function onRequestGet(context) {
   }));
   const pre = rows.map(withPrecomputed);
   const valid = pre.filter((x) => Number.isFinite(x._pricePerSqm));
+  const universe = buildScoringUniverse(valid);
+  const scoringRows = universe.rows;
 
   const scored = [];
-  for (const listing of valid) {
-    const deal = scoreDeal(listing, valid, { minComps });
+  for (const listing of scoringRows) {
+    const deal = scoreDeal(listing, scoringRows, {
+      minComps,
+      strictSameNeighborhood,
+      minSameNeighborhoodComps
+    });
     if (!deal) {
       continue;
     }
@@ -1026,14 +1164,28 @@ export async function onRequestGet(context) {
         "krediye uygunluk",
         "site içerisinde",
         "kullanım durumu",
+        "mahalle sıkılığı",
+        "outlier temizliği",
+        "dedup kümesi",
         "emsal benzerlik güveni",
         "Endeksa karşılaştırması"
       ]
     },
-    params: { limit, minDiscount, minConfidence, minComps },
+    params: {
+      limit,
+      minDiscount,
+      minConfidence,
+      minComps,
+      strictSameNeighborhood,
+      minSameNeighborhoodComps
+    },
     totals: {
       activeListings: rows.length,
       listingsWithPriceAndSqm: valid.length,
+      listingsAfterOutlierFilter: valid.length - universe.filteredOut,
+      listingsAfterDedup: scoringRows.length,
+      filteredOutliers: universe.filteredOut,
+      dedupedListings: universe.dedupedOut,
       dealsMatched: scored.length
     },
     deals: scored.slice(0, limit)
