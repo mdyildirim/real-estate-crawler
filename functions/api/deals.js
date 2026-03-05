@@ -1301,6 +1301,26 @@ function ndcgAtK(records, scoreField, k, relevanceField = "truthDiscount") {
   return dcg / idcg;
 }
 
+function countryCostModel(areaCountry) {
+  const code = canonicalCountryCode(areaCountry, "TR");
+  if (code === "ES") {
+    return {
+      transactionRate: 0.11,
+      renovationBaseUnit: 90,
+      renovationAgeUnit: 210,
+      renovationUsageUnit: 90,
+      renovationFloorUnit: 60
+    };
+  }
+  return {
+    transactionRate: 0.055,
+    renovationBaseUnit: 1200,
+    renovationAgeUnit: 2800,
+    renovationUsageUnit: 1400,
+    renovationFloorUnit: 900
+  };
+}
+
 export function buildBacktestReport(preRows, opts = {}) {
   const folds = Math.max(3, Math.min(10, toInt(opts.folds, 5)));
   const minComps = Math.max(3, Math.min(30, toInt(opts.minComps, 6)));
@@ -1738,6 +1758,7 @@ function scoreDeal(target, rows, opts) {
   const qualityMultiplier = 0.78 + livabilityQuality * 0.44;
 
   const ageNorm = Number.isFinite(target._buildingAgeYears) ? clamp(target._buildingAgeYears / 30, 0, 1.5) : 0.55;
+  const costModel = countryCostModel(opts.areaCountry);
   const usageRenovationPenalty =
     target._usageCategory === "empty"
       ? 0.08
@@ -1756,14 +1777,19 @@ function scoreDeal(target, rows, opts) {
           : target._floorCategory === "basement"
             ? 0.28
             : 0.12;
-  const renovationUnitCost = 1200 + ageNorm * 2800 + usageRenovationPenalty * 1400 + floorRenovationPenalty * 900;
+  const renovationUnitCost =
+    costModel.renovationBaseUnit +
+    ageNorm * costModel.renovationAgeUnit +
+    usageRenovationPenalty * costModel.renovationUsageUnit +
+    floorRenovationPenalty * costModel.renovationFloorUnit;
   const renovationAssetFactor =
     target._assetClass === "ofis" ? 0.65 : target._assetClass === "prefabrik" ? 0.55 : 1;
   const renovationCostTl =
     Number.isFinite(target._effectiveSqm) && target._effectiveSqm > 0
       ? renovationUnitCost * target._effectiveSqm * renovationAssetFactor
       : 0;
-  const transactionCostTl = Number.isFinite(target.priceTl) && target.priceTl > 0 ? target.priceTl * 0.055 : 0;
+  const transactionCostTl =
+    Number.isFinite(target.priceTl) && target.priceTl > 0 ? target.priceTl * costModel.transactionRate : 0;
   const expectedNetGainTl = fairPrice - target.priceTl - transactionCostTl - renovationCostTl;
   const netYieldPct =
     Number.isFinite(target.priceTl) && target.priceTl > 0 ? expectedNetGainTl / target.priceTl : null;
@@ -1962,6 +1988,8 @@ function scoreDeal(target, rows, opts) {
       discountPct,
       transactionCostTl,
       renovationCostTl,
+      transactionRate: costModel.transactionRate,
+      renovationUnitCost,
       expectedNetGainTl,
       netYieldPct,
       riskAdjustedYieldPct,
@@ -2072,6 +2100,7 @@ export async function onRequestGet(context) {
   const scored = [];
   for (const listing of scoringRows) {
     const deal = scoreDeal(listing, scoringRows, {
+      areaCountry,
       minComps,
       strictSameNeighborhood,
       minSameNeighborhoodComps,
