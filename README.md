@@ -6,7 +6,7 @@ Prototype crawler that can run for any `city/district` in Turkiye, store results
 
 - `emlakjet` (primary working source for city/district-wide crawling)
 - `sahibinden` (currently often challenge/blocked in this prototype mode)
-- `hepsiemlak` (currently often challenge/blocked in this prototype mode)
+- `hepsiemlak` (browser-rendered Playwright mode; still frequently challenge-blocked)
 - `atasehirsatilik` (Ataşehir-specific extra source)
 - `turyap_251316` (Ataşehir office page, filtered by address)
 
@@ -32,6 +32,12 @@ Control detail fetch cap for Emlakjet listing pages (feature extraction):
 
 ```bash
 npm run crawl -- --city=Istanbul --district=Atasehir --sources=emlakjet --emlakjet-detail-max=350
+```
+
+Control Hepsiemlak paging and challenge wait:
+
+```bash
+npm run crawl -- --city=Istanbul --district=Atasehir --sources=hepsiemlak --hepsiemlak-max-pages=24 --hepsiemlak-detail-max=60 --hepsiemlak-wait-ms=45000
 ```
 
 Quick multi-source run:
@@ -64,6 +70,8 @@ Schema:
 - `db/migrations/0001_init.sql`
 - `db/migrations/0002_listing_features.sql`
 - `db/migrations/0003_system_logs.sql`
+- `db/migrations/0004_listing_legal_usage_signals.sql`
+- `db/migrations/0005_deal_feedback.sql`
 
 ## Output Files
 

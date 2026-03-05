@@ -12,7 +12,8 @@
     "pages:dev": "wrangler pages dev public"
   },
   "dependencies": {
-    "better-sqlite3": "^12.6.2"
+    "better-sqlite3": "^12.6.2",
+    "playwright": "^1.58.2"
   },
   "devDependencies": {
     "wrangler": "^4.70.0"

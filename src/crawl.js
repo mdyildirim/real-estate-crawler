@@ -25,7 +25,7 @@ const SOURCE_DEFS = {
   hepsiemlak: {
     source: "hepsiemlak",
     urlForArea: (area) => `https://www.hepsiemlak.com/${toTurkishSlug(area.city)}-${toTurkishSlug(area.district)}-satilik`,
-    crawl: crawlCloudflareProneSource
+    crawl: crawlHepsiemlak
   },
   emlakjet: {
     source: "emlakjet",
@@ -167,6 +167,9 @@ function parseArgs(argv) {
     timeoutMs: DEFAULT_TIMEOUT_MS,
     concurrency: DEFAULT_CONCURRENCY,
     emlakjetDetailMax: 350,
+    hepsiemlakMaxPages: 24,
+    hepsiemlakWaitChallengeMs: 45000,
+    hepsiemlakDetailMax: 60,
     outputDir: DEFAULT_OUTPUT_DIR,
     writeOutput: true,
     writeSqlite: true,
@@ -190,6 +193,12 @@ function parseArgs(argv) {
       opts.concurrency = toPositiveInt(arg.slice("--concurrency=".length), DEFAULT_CONCURRENCY);
     } else if (arg.startsWith("--emlakjet-detail-max=")) {
       opts.emlakjetDetailMax = toPositiveInt(arg.slice("--emlakjet-detail-max=".length), 350);
+    } else if (arg.startsWith("--hepsiemlak-max-pages=")) {
+      opts.hepsiemlakMaxPages = toPositiveInt(arg.slice("--hepsiemlak-max-pages=".length), 24);
+    } else if (arg.startsWith("--hepsiemlak-wait-ms=")) {
+      opts.hepsiemlakWaitChallengeMs = toPositiveInt(arg.slice("--hepsiemlak-wait-ms=".length), 45000);
+    } else if (arg.startsWith("--hepsiemlak-detail-max=")) {
+      opts.hepsiemlakDetailMax = toPositiveInt(arg.slice("--hepsiemlak-detail-max=".length), 60);
     } else if (arg.startsWith("--output-dir=")) {
       opts.outputDir = arg.slice("--output-dir=".length) || DEFAULT_OUTPUT_DIR;
     } else if (arg.startsWith("--sqlite-path=")) {
@@ -271,6 +280,852 @@ async function crawlCloudflareProneSource(ctx) {
     fetchedAt,
     notes: listings.length ? [] : ["No listing links parsed from non-blocked response."],
     listings
+  };
+}
+
+async function crawlHepsiemlak(ctx) {
+  try {
+    return await crawlHepsiemlakViaPlaywright(ctx);
+  } catch (error) {
+    const fallback = await crawlCloudflareProneSource(ctx);
+    const reason = normalizeError(error);
+    fallback.notes = [`Playwright mode failed: ${reason}`, ...(fallback.notes || [])];
+    return fallback;
+  }
+}
+
+async function crawlHepsiemlakViaPlaywright(ctx) {
+  const { def } = ctx;
+  const fetchedAt = new Date().toISOString();
+  const notes = [];
+  const chromium = await loadPlaywrightChromium();
+  if (!chromium) {
+    throw new Error("Playwright chromium is unavailable. Run: npx playwright install chromium");
+  }
+
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      "--disable-blink-features=AutomationControlled",
+      "--no-sandbox",
+      "--disable-dev-shm-usage"
+    ]
+  });
+
+  let pageCountFromDom = 1;
+  let observedTotal = null;
+  let blockedPages = 0;
+  const crawledListings = [];
+
+  try {
+    const context = await browser.newContext({
+      userAgent: BROWSER_UA,
+      locale: "tr-TR",
+      timezoneId: "Europe/Istanbul",
+      viewport: { width: 1365, height: 900 }
+    });
+    await context.route("**/*", (route) => {
+      const type = route.request().resourceType();
+      if (type === "image" || type === "font" || type === "media") {
+        route.abort();
+        return;
+      }
+      route.continue();
+    });
+
+    const page = await context.newPage();
+    const candidateUrls = buildHepsiemlakCandidateUrls(ctx.area, def.url);
+    let resolvedUrl = def.url;
+    let initialNav = null;
+
+    for (const candidateUrl of candidateUrls) {
+      const nav = await openHepsiemlakPageWithChallengeHandling(
+        page,
+        candidateUrl,
+        ctx.timeoutMs,
+        ctx.hepsiemlakWaitChallengeMs
+      );
+      if (nav.notFound) {
+        notes.push(`URL not found: ${candidateUrl}`);
+        continue;
+      }
+      resolvedUrl = candidateUrl;
+      initialNav = nav;
+      break;
+    }
+
+    if (!initialNav) {
+      return {
+        source: def.source,
+        url: def.url,
+        status: "blocked",
+        blocked: true,
+        observedTotal: null,
+        fetchedAt,
+        notes: [...notes, "No hepsiemlak URL candidate returned a listing page."],
+        listings: []
+      };
+    }
+
+    if (initialNav.blocked) {
+      const challengeSignal = formatHepsiemlakChallengeSignal(initialNav);
+      return {
+        source: def.source,
+        url: resolvedUrl,
+        status: "blocked",
+        blocked: true,
+        observedTotal: null,
+        fetchedAt,
+        notes: [
+          ...notes,
+          "Cloudflare challenge not solved in Playwright mode.",
+          ...(challengeSignal ? [challengeSignal] : [])
+        ],
+        listings: []
+      };
+    }
+
+    const firstPageData = await extractHepsiemlakPageData(page);
+    pageCountFromDom = Math.max(1, firstPageData.paginationPageCount || 1);
+    observedTotal = firstPageData.observedTotal;
+    crawledListings.push(...(firstPageData.listings || []));
+
+    const pageUrls = buildHepsiemlakPageUrls(
+      resolvedUrl,
+      pageCountFromDom,
+      observedTotal,
+      firstPageData.listings.length,
+      ctx.hepsiemlakMaxPages
+    );
+    const targetPageUrls = pageUrls.slice(1);
+    let blockedPageSignal = "";
+
+    for (const pageUrl of targetPageUrls) {
+      const pageNav = await openHepsiemlakPageWithChallengeHandling(
+        page,
+        pageUrl,
+        ctx.timeoutMs,
+        Math.min(ctx.hepsiemlakWaitChallengeMs, 18000)
+      );
+      if (pageNav.blocked) {
+        blockedPages += 1;
+        if (!blockedPageSignal) {
+          blockedPageSignal = formatHepsiemlakChallengeSignal(pageNav);
+        }
+        continue;
+      }
+      const pageData = await extractHepsiemlakPageData(page);
+      if (observedTotal == null && Number.isFinite(pageData.observedTotal)) {
+        observedTotal = pageData.observedTotal;
+      }
+      crawledListings.push(...(pageData.listings || []));
+      await page.waitForTimeout(350);
+    }
+
+    const baseAddress = `${ctx.area.city} / ${ctx.area.district}`;
+    const listingRows = uniqueBy(
+      crawledListings.filter((row) => row?.url && isHepsiemlakListingUrl(row.url)),
+      (row) => row.url
+    ).map((row) => ({
+      ...row,
+      listingId: row.listingId || parseHepsiemlakListingIdFromUrl(row.url),
+      address: row.address || baseAddress,
+      neighborhood: row.neighborhood || parseNeighborhoodFromHepsiemlakUrl(row.url)
+    }));
+
+    const detailTargets = listingRows.slice(0, Math.max(1, ctx.hepsiemlakDetailMax || 60));
+    let detailParsedCount = 0;
+    let detailBlockedCount = 0;
+    let detailErrorCount = 0;
+    for (const row of detailTargets) {
+      try {
+        let detailNav = { blocked: true, notFound: false };
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          detailNav = await openHepsiemlakPageWithChallengeHandling(
+            page,
+            row.url,
+            ctx.timeoutMs,
+            Math.min(ctx.hepsiemlakWaitChallengeMs, 18000)
+          );
+          if (!detailNav.blocked && !detailNav.notFound) {
+            break;
+          }
+          await page.waitForTimeout(1400 + attempt * 600);
+        }
+        if (detailNav.blocked || detailNav.notFound) {
+          detailBlockedCount += 1;
+          continue;
+        }
+        const pageTitle = await page.title();
+        const detailText = await page.evaluate(() => (document.body && document.body.innerText) || "");
+        const detailHtml = await page.content();
+        const parsed = parseHepsiemlakDetailText(detailText, detailHtml, row.url, ctx.area);
+        if (pageTitle) {
+          parsed.title = cleanTitle(String(pageTitle).replace(/\|\s*hepsiemlak.*$/i, "").trim());
+        }
+        Object.assign(row, parsed);
+        if (parsed._featureCount > 0) {
+          detailParsedCount += 1;
+        }
+      } catch {
+        detailErrorCount += 1;
+      }
+      await page.waitForTimeout(700);
+    }
+
+    const listings = listingRows.map((row) =>
+      createListing(def.source, row.listingId, row.url, {
+        title: row.title || slugToTitle(row.url),
+        address: row.address || baseAddress,
+        neighborhood: row.neighborhood || "",
+        roomCount: row.roomCount || "",
+        buildingAge: row.buildingAge || "",
+        floorInfo: row.floorInfo || "",
+        deedStatus: row.deedStatus || "",
+        creditSuitability: row.creditSuitability || "",
+        inSite: row.inSite || "",
+        usageStatus: row.usageStatus || "",
+        priceTl: row.priceTl,
+        grossSqm: row.grossSqm,
+        netSqm: row.netSqm
+      })
+    );
+
+    notes.push(
+      `Playwright fetched ${Math.max(1, pageUrls.length - blockedPages)}/${pageUrls.length} hepsiemlak page(s).`
+    );
+    if (blockedPages > 0) {
+      notes.push(`${blockedPages} page(s) were still challenge-blocked.`);
+      if (blockedPageSignal) {
+        notes.push(`Blocked page sample: ${blockedPageSignal}`);
+      }
+    }
+    if (pageCountFromDom > (ctx.hepsiemlakMaxPages || 24)) {
+      notes.push(`Pagination capped at ${ctx.hepsiemlakMaxPages} page(s).`);
+    }
+    notes.push(`Parsed details for ${detailParsedCount}/${detailTargets.length} listing page(s).`);
+    if (detailBlockedCount > 0) {
+      notes.push(`${detailBlockedCount} detail page(s) were challenge-blocked or unavailable.`);
+    }
+    if (detailErrorCount > 0) {
+      notes.push(`${detailErrorCount} detail page(s) failed to parse.`);
+    }
+    if (listingRows.length > detailTargets.length) {
+      notes.push(`Detail parsing capped at ${detailTargets.length} listing(s).`);
+    }
+    if (listings.length === 0) {
+      notes.push("No listing cards parsed from rendered page.");
+    }
+
+    return {
+      source: def.source,
+      url: resolvedUrl,
+      status: listings.length > 0 ? "ok" : "blocked",
+      blocked: listings.length === 0,
+      observedTotal: observedTotal ?? null,
+      fetchedAt,
+      notes,
+      listings
+    };
+  } finally {
+    await browser.close();
+  }
+}
+
+async function loadPlaywrightChromium() {
+  try {
+    const mod = require("playwright");
+    return mod.chromium || null;
+  } catch {
+    return null;
+  }
+}
+
+async function openHepsiemlakPageWithChallengeHandling(page, targetUrl, timeoutMs, challengeWaitMs) {
+  await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+  try {
+    await page.waitForLoadState("networkidle", { timeout: Math.min(timeoutMs, 10000) });
+  } catch {
+    // Dynamic pages may keep requests open; continue.
+  }
+
+  const deadline = Date.now() + Math.max(6000, challengeWaitMs || timeoutMs);
+  while (Date.now() < deadline) {
+    const state = await page.evaluate(() => {
+      function normalizeForDetect(value) {
+        return String(value || "")
+          .toLowerCase()
+          .replace(/[ç]/g, "c")
+          .replace(/[ğ]/g, "g")
+          .replace(/[ı]/g, "i")
+          .replace(/[ö]/g, "o")
+          .replace(/[ş]/g, "s")
+          .replace(/[ü]/g, "u");
+      }
+      const titleRaw = document.title || "";
+      const bodyRaw = (document.body && document.body.innerText) || "";
+      const title = normalizeForDetect(titleRaw);
+      const body = normalizeForDetect(bodyRaw);
+      const notFound =
+        title.includes("aradiginiz sayfaya ulasilamiyor") ||
+        body.includes("404 - aradiginiz sayfaya ulasilamiyor");
+      const blocked =
+        title.includes("just a moment") ||
+        title.includes("bir dakika lutfen") ||
+        body.includes("enable javascript and cookies to continue") ||
+        body.includes("__cf_chl") ||
+        body.includes("guvenlik dogrulamasi gerceklestirme") ||
+        body.includes("web sitesi bir bot olmadiginizi dogruladiktan sonra");
+      const listingAnchors = [...document.querySelectorAll("a[href]")]
+        .map((a) => a.getAttribute("href") || "")
+        .filter((href) => /\/\d+-\d+\/?$/.test(href) && /satilik/i.test(href)).length;
+      return {
+        blocked,
+        notFound,
+        listingAnchors,
+        title: String(titleRaw || "").slice(0, 120),
+        bodySnippet: String(bodyRaw || "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 240)
+      };
+    });
+
+    if (state.notFound) {
+      return { blocked: false, notFound: true, title: state.title, bodySnippet: state.bodySnippet };
+    }
+    if (!state.blocked && state.listingAnchors > 0) {
+      return { blocked: false, notFound: false, title: state.title, bodySnippet: state.bodySnippet };
+    }
+    if (!state.blocked) {
+      return { blocked: false, notFound: false, title: state.title, bodySnippet: state.bodySnippet };
+    }
+    await page.waitForTimeout(1500);
+  }
+
+  const finalState = await page.evaluate(() => {
+    function normalizeForDetect(value) {
+      return String(value || "")
+        .toLowerCase()
+        .replace(/[ç]/g, "c")
+        .replace(/[ğ]/g, "g")
+        .replace(/[ı]/g, "i")
+        .replace(/[ö]/g, "o")
+        .replace(/[ş]/g, "s")
+        .replace(/[ü]/g, "u");
+    }
+    const titleRaw = document.title || "";
+    const bodyRaw = (document.body && document.body.innerText) || "";
+    const title = normalizeForDetect(titleRaw);
+    const body = normalizeForDetect(bodyRaw);
+    const notFound =
+      title.includes("aradiginiz sayfaya ulasilamiyor") ||
+      body.includes("404 - aradiginiz sayfaya ulasilamiyor");
+    const blocked =
+      title.includes("just a moment") ||
+      title.includes("bir dakika lutfen") ||
+      body.includes("enable javascript and cookies to continue") ||
+      body.includes("__cf_chl") ||
+      body.includes("guvenlik dogrulamasi gerceklestirme") ||
+      body.includes("web sitesi bir bot olmadiginizi dogruladiktan sonra");
+    return {
+      blocked,
+      notFound,
+      title: String(titleRaw || "").slice(0, 120),
+      bodySnippet: String(bodyRaw || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 240)
+    };
+  });
+  return finalState;
+}
+
+async function extractHepsiemlakPageData(page) {
+  return page.evaluate(() => {
+    function clean(text) {
+      return String(text || "").replace(/\s+/g, " ").trim();
+    }
+
+    function parseNumber(value) {
+      if (value == null) {
+        return null;
+      }
+      const cleaned = String(value).replace(/[^0-9.,-]/g, "");
+      if (!cleaned) {
+        return null;
+      }
+      const normalized =
+        cleaned.includes(",") && !cleaned.includes(".")
+          ? cleaned.replace(",", ".")
+          : cleaned.replace(/,/g, "");
+      const n = Number(normalized);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function parsePrice(text) {
+      const m = String(text).match(/([0-9][0-9.\s]*)\s*(TL|₺)/i);
+      return m ? parseNumber(m[1].replace(/\s+/g, "")) : null;
+    }
+
+    function parseRoom(text) {
+      const m = String(text).match(/(\d+\s*\+\s*\d+|st[üu]dyo)/i);
+      return m ? clean(m[1]).replace(/\s+/g, "") : "";
+    }
+
+    function parseSqm(text) {
+      const m = String(text).match(/([0-9]{2,4}(?:[.,][0-9]+)?)\s*m²/i);
+      return m ? parseNumber(m[1]) : null;
+    }
+
+    function parseBuildingAge(text) {
+      const m = String(text).match(/([0-9]{1,2}\s*-\s*[0-9]{1,2}|[0-9]{1,2}\s*(?:ve\s*)?uzeri|s[ıi]f[ıi]r\s*bina|yeni)/i);
+      return m ? clean(m[1]) : "";
+    }
+
+    function parseFloor(text) {
+      const m = String(text).match(
+        /(ara\s*kat|bahce\s*kati|bah[çc]e\s*kat[ıi]|zemin|giris|giri[sş]|en\s*[uü]st\s*kat|[çc]at[ıi]\s*kat[ıi]|[0-9]{1,2}\.?\s*kat)/i
+      );
+      return m ? clean(m[1]) : "";
+    }
+
+    function parseAddress(text) {
+      const lines = clean(text)
+        .split(" ")
+        .join(" ")
+        .split("•")
+        .map((x) => clean(x))
+        .filter(Boolean);
+      for (const line of lines) {
+        if (/istanbul/i.test(line) && /(atasehir|ataşehir)/i.test(line)) {
+          return line.replace(/\s*-\s*/g, " / ");
+        }
+      }
+      return "";
+    }
+
+    function parseNeighborhood(text, title) {
+      const neighborhoodFromText = String(text).match(/([A-Za-zÇĞİÖŞÜçğıöşü0-9.\- ]+Mah(?:\.|allesi)?)/i);
+      if (neighborhoodFromText) {
+        return clean(neighborhoodFromText[1]);
+      }
+      const neighborhoodFromTitle = String(title).match(/([A-Za-zÇĞİÖŞÜçğıöşü0-9.\- ]+Mah(?:\.|allesi)?)/i);
+      if (neighborhoodFromTitle) {
+        return clean(neighborhoodFromTitle[1]);
+      }
+      return "";
+    }
+
+    function isListingUrl(urlText) {
+      try {
+        const u = new URL(urlText);
+        if (!/hepsiemlak\.com$/i.test(u.hostname)) {
+          return false;
+        }
+        if (!/satilik/i.test(u.pathname)) {
+          return false;
+        }
+        return /\/\d+-\d+\/?$/.test(u.pathname);
+      } catch {
+        return false;
+      }
+    }
+
+    const anchors = Array.from(document.querySelectorAll("a[href]"));
+    const listingByUrl = new Map();
+    const pageNumberCandidates = [];
+
+    for (const anchor of anchors) {
+      const href = anchor.getAttribute("href");
+      if (!href) {
+        continue;
+      }
+
+      let absUrl = "";
+      try {
+        absUrl = new URL(href, window.location.origin).toString();
+      } catch {
+        continue;
+      }
+
+      try {
+        const p = new URL(absUrl).searchParams.get("sayfa");
+        const pageNum = p ? Number(p) : NaN;
+        if (Number.isFinite(pageNum) && pageNum > 1) {
+          pageNumberCandidates.push(Math.floor(pageNum));
+        }
+      } catch {
+        // ignore
+      }
+
+      if (!isListingUrl(absUrl) || listingByUrl.has(absUrl)) {
+        continue;
+      }
+
+      const card = anchor.closest("article, li, div");
+      const container = card || anchor;
+      const text = clean(container.innerText || anchor.innerText || "");
+      const titleEl = container.querySelector
+        ? container.querySelector("h1, h2, h3, h4, h5, h6")
+        : null;
+      const title = clean(
+        (titleEl && titleEl.innerText) || anchor.getAttribute("title") || anchor.textContent || ""
+      );
+      const address = parseAddress(text);
+      const listingIdMatch = absUrl.match(/\/(\d+-\d+)\/?$/);
+
+      listingByUrl.set(absUrl, {
+        url: absUrl,
+        listingId: listingIdMatch ? listingIdMatch[1] : "",
+        title,
+        address,
+        neighborhood: parseNeighborhood(text, title),
+        roomCount: parseRoom(text),
+        buildingAge: parseBuildingAge(text),
+        floorInfo: parseFloor(text),
+        priceTl: parsePrice(text),
+        grossSqm: parseSqm(text),
+        netSqm: null
+      });
+    }
+
+    const html = document.documentElement ? document.documentElement.outerHTML : "";
+    const urlRegex = /https:\/\/www\.hepsiemlak\.com\/[^"'<>\\\s]+?\/\d+-\d+\/?/gi;
+    for (const m of html.matchAll(urlRegex)) {
+      const absolute = clean(m[0]);
+      if (!isListingUrl(absolute) || listingByUrl.has(absolute)) {
+        continue;
+      }
+      const listingIdMatch = absolute.match(/\/(\d+-\d+)\/?$/);
+      listingByUrl.set(absolute, {
+        url: absolute,
+        listingId: listingIdMatch ? listingIdMatch[1] : "",
+        title: "",
+        address: "",
+        neighborhood: "",
+        roomCount: "",
+        buildingAge: "",
+        floorInfo: "",
+        priceTl: null,
+        grossSqm: null,
+        netSqm: null
+      });
+    }
+
+    const pageText = clean((document.body && document.body.innerText) || "");
+    let observedTotal = null;
+    for (const regex of [/([0-9][0-9.]*)\s*ilan\s*bulundu/i, /([0-9][0-9.]*)\s*sonuc/i]) {
+      const m = pageText.match(regex);
+      if (!m) {
+        continue;
+      }
+      const n = Number(String(m[1]).replace(/\./g, ""));
+      if (Number.isFinite(n) && n > 0) {
+        observedTotal = n;
+        break;
+      }
+    }
+
+    return {
+      observedTotal,
+      paginationPageCount: pageNumberCandidates.length ? Math.max(...pageNumberCandidates) : 1,
+      listings: Array.from(listingByUrl.values())
+    };
+  });
+}
+
+function buildHepsiemlakPageUrls(baseUrl, domPageCount, observedTotal, firstPageListingCount, maxPages) {
+  let targetPageCount = Math.max(1, Number(domPageCount) || 1);
+  const pageSizeGuess = Math.max(1, Number(firstPageListingCount) || 24);
+  if (Number.isFinite(observedTotal) && observedTotal > 0) {
+    const estimatedPages = Math.ceil(observedTotal / pageSizeGuess);
+    if (estimatedPages > targetPageCount) {
+      targetPageCount = estimatedPages;
+    }
+  }
+  targetPageCount = Math.min(Math.max(1, targetPageCount), Math.max(1, maxPages || 24));
+
+  const out = [baseUrl];
+  for (let page = 2; page <= targetPageCount; page += 1) {
+    out.push(withQueryParam(baseUrl, "sayfa", String(page)));
+  }
+  return uniqueBy(out, (x) => x);
+}
+
+function buildHepsiemlakCandidateUrls(area, fallbackUrl) {
+  const districtSlug = toTurkishSlug(area?.district || "");
+  const citySlug = toTurkishSlug(area?.city || "");
+  const candidates = [];
+  if (fallbackUrl) {
+    candidates.push(fallbackUrl);
+  }
+  if (districtSlug) {
+    candidates.push(`https://www.hepsiemlak.com/${districtSlug}-satilik`);
+    candidates.push(`https://www.hepsiemlak.com/${districtSlug}-satilik/daire`);
+    candidates.push(`https://www.hepsiemlak.com/${districtSlug}-${districtSlug}-satilik`);
+    candidates.push(`https://www.hepsiemlak.com/${districtSlug}-${districtSlug}-satilik/daire`);
+  }
+  if (citySlug && districtSlug) {
+    candidates.push(`https://www.hepsiemlak.com/${citySlug}-${districtSlug}-satilik`);
+    candidates.push(`https://www.hepsiemlak.com/${citySlug}-${districtSlug}-satilik/daire`);
+  }
+  return uniqueBy(candidates, (x) => x);
+}
+
+function isHepsiemlakListingUrl(urlText) {
+  try {
+    const u = new URL(urlText);
+    if (!/hepsiemlak\.com$/i.test(u.hostname)) {
+      return false;
+    }
+    if (!/satilik/i.test(u.pathname)) {
+      return false;
+    }
+    return /\/\d+-\d+\/?$/.test(u.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function parseHepsiemlakListingIdFromUrl(urlText) {
+  const m = String(urlText || "").match(/\/(\d+-\d+)\/?$/);
+  return m ? m[1] : extractTrailingNumber(String(urlText || ""));
+}
+
+function parseNeighborhoodFromHepsiemlakUrl(urlText) {
+  try {
+    const pathname = new URL(urlText).pathname.replace(/^\/+/, "");
+    const firstSegment = pathname.split("/")[0] || "";
+    const slug = firstSegment.replace(/-satilik.*/i, "");
+    const parts = slug.split("-").filter(Boolean);
+    if (parts.length < 3) {
+      return "";
+    }
+    const neighborhoodParts = parts.slice(2);
+    return neighborhoodParts
+      .map((part) => part.charAt(0).toLocaleUpperCase("tr-TR") + part.slice(1))
+      .join(" ")
+      .trim();
+  } catch {
+    return "";
+  }
+}
+
+function formatHepsiemlakChallengeSignal(navState) {
+  if (!navState) {
+    return "";
+  }
+  const title = cleanTitle(String(navState.title || ""));
+  const snippet = cleanTitle(String(navState.bodySnippet || ""));
+  const signal = [title, snippet].filter(Boolean).join(" | ");
+  return signal ? `Challenge page signal: ${signal}` : "";
+}
+
+function parseHepsiemlakDetailText(rawText, rawHtml, listingUrl, area) {
+  const text = String(rawText || "").replace(/\s+/g, " ").trim();
+  const html = String(rawHtml || "");
+  const empty = {
+    _featureCount: 0,
+    title: "",
+    address: `${area.city} / ${area.district}`,
+    neighborhood: parseNeighborhoodFromHepsiemlakUrl(listingUrl),
+    roomCount: "",
+    buildingAge: "",
+    floorInfo: "",
+    deedStatus: "",
+    creditSuitability: "",
+    inSite: "",
+    usageStatus: "",
+    priceTl: null,
+    grossSqm: null,
+    netSqm: null
+  };
+  if (!text && !html) {
+    return empty;
+  }
+
+  function esc(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function sliceFeaturesSegment(fullText) {
+    const lower = normalizeForMatch(fullText);
+    const startIdx = lower.indexOf("ilan ozellikleri");
+    if (startIdx < 0) {
+      return fullText;
+    }
+    const endTokens = [
+      "trend aramalar",
+      "guvenlik hatirlatmalari",
+      "hatali ilan bildir",
+      "firmanin diger ilanlari"
+    ];
+    let endIdx = fullText.length;
+    for (const token of endTokens) {
+      const idx = lower.indexOf(token, startIdx + 20);
+      if (idx > 0 && idx < endIdx) {
+        endIdx = idx;
+      }
+    }
+    return fullText.slice(startIdx, endIdx);
+  }
+
+  function labelValue(sourceText, label, nextLabels) {
+    const next = nextLabels.map((x) => esc(x)).join("|");
+    const pattern = next
+      ? new RegExp(`${esc(label)}\\s*([^]+?)\\s*(?=(?:${next})\\s|$)`, "i")
+      : new RegExp(`${esc(label)}\\s*([^]+)$`, "i");
+    const m = sourceText.match(pattern);
+    return m ? cleanTitle(m[1]) : "";
+  }
+
+  const featureText = sliceFeaturesSegment(text);
+  const labels = [
+    "İlan no",
+    "Son Güncelleme",
+    "İlan Durumu",
+    "Konut Tipi",
+    "Konut Şekli",
+    "Oda Sayısı",
+    "Banyo Sayısı",
+    "Brüt / Net M2",
+    "Kat Sayısı",
+    "Bulunduğu Kat",
+    "Bina Yaşı",
+    "Isınma Tipi",
+    "Tapu Durumu",
+    "Krediye Uygunluk",
+    "Site İçerisinde",
+    "Kullanım Durumu",
+    "Eşya Durumu",
+    "Aidat",
+    "Takas"
+  ];
+  const values = {};
+  for (let i = 0; i < labels.length; i += 1) {
+    const label = labels[i];
+    const restLabels = labels.slice(i + 1);
+    const value = labelValue(featureText, label, restLabels);
+    if (value) {
+      values[label] = value;
+    }
+  }
+
+  const structuredPrice = parseLooseNumber((html.match(/"price"\s*:\s*"([0-9.]+)"/i) || [])[1]);
+  const topText = text.slice(0, Math.min(text.length, 350));
+  const priceTl = firstFiniteNumber([
+    structuredPrice,
+    parseLooseNumber((topText.match(/([0-9][0-9.\s]*)\s*(?:TL|₺)/i) || [])[1]),
+    parseLooseNumber((featureText.match(/([0-9][0-9.\s]*)\s*(?:TL|₺)/i) || [])[1])
+  ]);
+
+  let grossSqm = null;
+  let netSqm = null;
+  const grossNet = values["Brüt / Net M2"] || "";
+  const grossNetMatch = grossNet.match(/([0-9]+(?:[.,][0-9]+)?)\s*\/\s*([0-9]+(?:[.,][0-9]+)?)/i);
+  if (grossNetMatch) {
+    grossSqm = parseLooseNumber(grossNetMatch[1]);
+    netSqm = parseLooseNumber(grossNetMatch[2]);
+  }
+  if (!Number.isFinite(grossSqm)) {
+    grossSqm = parseLooseNumber((html.match(/Brüt Metrekare:\s*([0-9]+(?:[.,][0-9]+)?)/i) || [])[1]);
+  }
+  if (!Number.isFinite(netSqm)) {
+    netSqm = parseLooseNumber((html.match(/Net Metrekare:\s*([0-9]+(?:[.,][0-9]+)?)/i) || [])[1]);
+  }
+  const topSqm = parseLooseNumber((topText.match(/([0-9]{2,4}(?:[.,][0-9]+)?)\s*m2/i) || [])[1]);
+  if (!Number.isFinite(grossSqm) || grossSqm < 10) {
+    grossSqm = topSqm;
+  }
+  if (Number.isFinite(netSqm) && netSqm < 10) {
+    netSqm = null;
+  }
+
+  const roomCountRaw =
+    values["Oda Sayısı"] ||
+    (featureText.match(/Oda Sayısı\s*([0-9]+\s*\+\s*[0-9]+|Stüdyo)/i) || [])[1] ||
+    (html.match(/Oda Sayısı:\s*([0-9]+\s*\+\s*[0-9]+|Stüdyo)/i) || [])[1] ||
+    "";
+  const roomCount = roomCountRaw ? roomCountRaw.replace(/\s+/g, "") : "";
+  const buildingAge = values["Bina Yaşı"] || (featureText.match(/([0-9]{1,2}\s*Yaşında|Sıfır Bina|Yeni)/i) || [])[1] || "";
+  const floorInfo = values["Bulunduğu Kat"] || values["Konut Şekli"] || "";
+
+  function compactFeatureValue(value) {
+    return cleanTitle(String(value || "").split(/İlan Açıklaması|Özellikler|Çevre|Trend Aramalar/i)[0] || "").slice(0, 80);
+  }
+
+  const deedStatus = normalizeFeatureValue(compactFeatureValue(values["Tapu Durumu"] || ""));
+  let creditSuitability = normalizeFeatureValue(compactFeatureValue(values["Krediye Uygunluk"] || values["Krediye Uygun"] || ""));
+  if (!creditSuitability) {
+    const lowText = normalizeForMatch(featureText);
+    if (lowText.includes("krediye uygun degil")) {
+      creditSuitability = "Krediye Uygun Değil";
+    } else if (lowText.includes("krediye uygun")) {
+      creditSuitability = "Krediye Uygun";
+    }
+  }
+  let inSite = normalizeFeatureValue(compactFeatureValue(values["Site İçerisinde"] || ""));
+  if (!inSite) {
+    const lowText = normalizeForMatch(featureText);
+    if (lowText.includes("site icerisinde")) {
+      inSite = lowText.includes("hayir") ? "Hayır" : "Evet";
+    }
+  }
+  let usageStatus = normalizeFeatureValue(compactFeatureValue(values["Kullanım Durumu"] || ""));
+  if (!usageStatus) {
+    const lowText = normalizeForMatch(featureText);
+    if (lowText.includes("kiracili") || lowText.includes("kiraci")) {
+      usageStatus = "Kiracı Oturuyor";
+    } else if (lowText.includes("bos")) {
+      usageStatus = "Boş";
+    } else if (lowText.includes("mulk sahibi")) {
+      usageStatus = "Mülk Sahibi Oturuyor";
+    }
+  }
+  const usageNorm = normalizeForMatch(usageStatus);
+  if (usageNorm.includes("kiraci")) {
+    usageStatus = "Kiracı Oturuyor";
+  } else if (usageNorm.includes("mulk sahibi")) {
+    usageStatus = "Mülk Sahibi Oturuyor";
+  } else if (usageNorm.includes("bos")) {
+    usageStatus = "Boş";
+  }
+
+  if (inSite && !["Evet", "Hayır"].includes(inSite)) {
+    const inSiteNorm = normalizeForMatch(inSite);
+    inSite = inSiteNorm.includes("site") ? "Evet" : inSite;
+  }
+  const neighborhood = normalizeFeatureValue(parseNeighborhoodFromHepsiemlakUrl(listingUrl) || "");
+
+  const featureCount = [
+    priceTl,
+    grossSqm,
+    netSqm,
+    roomCount,
+    buildingAge,
+    floorInfo,
+    deedStatus,
+    creditSuitability,
+    inSite,
+    usageStatus
+  ].filter((x) => x != null && x !== "").length;
+
+  return {
+    _featureCount: featureCount,
+    title: "",
+    address: `${area.city} / ${area.district}`,
+    neighborhood,
+    roomCount,
+    buildingAge,
+    floorInfo,
+    deedStatus,
+    creditSuitability,
+    inSite,
+    usageStatus,
+    priceTl,
+    grossSqm: Number.isFinite(grossSqm) ? grossSqm : null,
+    netSqm: Number.isFinite(netSqm) ? netSqm : null
   };
 }
 
@@ -551,10 +1406,14 @@ async function fetchTextWithBlockFallback(url, timeoutMs) {
 }
 
 function isCloudflareBlocked(text) {
-  const lower = text.toLowerCase();
+  const lower = normalizeForMatch(String(text || ""));
   return (
     lower.includes("just a moment") ||
+    lower.includes("bir dakika lutfen") ||
     lower.includes("enable javascript and cookies to continue") ||
+    lower.includes("guvenlik dogrulamasi gerceklestirme") ||
+    lower.includes("web sitesi bir bot olmadiginizi dogruladiktan sonra") ||
+    lower.includes("cloudflare ile performans ve guvenlik") ||
     lower.includes("__cf_chl")
   );
 }
