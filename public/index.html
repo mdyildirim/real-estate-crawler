@@ -1093,33 +1093,70 @@
       async function fetchDeals() {
         const { country, city, district } = selectedArea();
 
-        const params = new URLSearchParams({
+        const strictParams = new URLSearchParams({
           country,
           city,
           district,
           limit: "10",
           min_discount: "0.12",
           min_confidence: "0.35",
-          min_comps: "6"
+          min_comps: "6",
+          strict_same_neighborhood: "1",
+          min_same_neighborhood_comps: "3"
         });
 
-        const res = await fetch(`/api/deals?${params.toString()}`);
-        const parsed = await readApiResponse(res);
-        const body = parsed.body;
-        if (!res.ok) {
-          throw new Error(body?.error || parsed.text.slice(0, 180) || `HTTP ${res.status}`);
+        const fetchDealsBody = async (params) => {
+          const res = await fetch(`/api/deals?${params.toString()}`);
+          const parsed = await readApiResponse(res);
+          const body = parsed.body;
+          if (!res.ok) {
+            throw new Error(body?.error || parsed.text.slice(0, 180) || `HTTP ${res.status}`);
+          }
+          return body;
+        };
+
+        let body = await fetchDealsBody(strictParams);
+        let deals = body.deals || [];
+        let relaxedMode = false;
+
+        if (deals.length === 0) {
+          const relaxedParams = new URLSearchParams({
+            country,
+            city,
+            district,
+            limit: "10",
+            min_discount: "0.07",
+            min_confidence: "0.22",
+            min_comps: "4",
+            strict_same_neighborhood: "0",
+            min_same_neighborhood_comps: "1"
+          });
+          const relaxedBody = await fetchDealsBody(relaxedParams);
+          const relaxedDeals = relaxedBody.deals || [];
+          if (relaxedDeals.length > 0) {
+            body = relaxedBody;
+            deals = relaxedDeals;
+            relaxedMode = true;
+          }
         }
 
         const totals = body.totals || {};
         activeCountEl.textContent = fmtInt(totals.activeListings);
         dealCountEl.textContent = fmtInt(totals.dealsMatched);
 
-        const deals = body.deals || [];
         dealListEl.innerHTML = "";
 
         if (deals.length === 0) {
           dealListEl.innerHTML = '<div class="empty">Bu bölgede şu an uygun fiyat adayı görünmüyor. Tekrar tarama başlatabilirsiniz.</div>';
           return;
+        }
+
+        if (relaxedMode) {
+          const msg = document.createElement("div");
+          msg.className = "empty";
+          msg.textContent =
+            "Sıkı filtrede aday çıkmadı. Daha esnek eşikler ile liste gösteriliyor (indirim ve güven puanı daha düşük olabilir).";
+          dealListEl.appendChild(msg);
         }
 
         for (const d of deals) {
