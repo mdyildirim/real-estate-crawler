@@ -302,6 +302,57 @@
         font-weight: 700;
         margin-right: 0.35rem;
       }
+
+      .feedback-row {
+        margin-top: 0.5rem;
+        border-top: 1px dashed #dbe5f2;
+        padding-top: 0.55rem;
+        display: grid;
+        gap: 0.45rem;
+      }
+
+      .feedback-actions {
+        display: grid;
+        gap: 0.45rem;
+      }
+
+      @media (min-width: 520px) {
+        .feedback-actions {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+
+      .fb-btn {
+        border: 1px solid var(--line);
+        background: #fff;
+        color: #204164;
+        font-weight: 800;
+        border-radius: 10px;
+        padding: 0.55rem 0.65rem;
+        cursor: pointer;
+      }
+
+      .fb-btn.good {
+        border-color: #bdeed0;
+        background: #ecfff4;
+        color: #17643d;
+      }
+
+      .fb-btn.bad {
+        border-color: #ffd0d9;
+        background: #fff1f4;
+        color: #a2143a;
+      }
+
+      .fb-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      .fb-status {
+        font-size: 0.88rem;
+        color: #3d5577;
+      }
     </style>
   </head>
   <body>
@@ -467,6 +518,14 @@
         return `%${(n * 100).toFixed(1)}`;
       }
 
+      function fmtDays(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n) || n < 0) {
+          return "-";
+        }
+        return `${Math.round(n)} gün`;
+      }
+
       function fmtSignedPctFromLift(liftValue) {
         const n = Number(liftValue);
         if (!Number.isFinite(n) || n <= 0) {
@@ -613,6 +672,51 @@
           .replace(/'/g, "&#39;");
       }
 
+      function feedbackStatusText(stats) {
+        const good = Number(stats?.goodCount || 0);
+        const bad = Number(stats?.badCount || 0);
+        const total = good + bad;
+        if (total === 0) {
+          return "Henüz geri bildirim yok.";
+        }
+        return `Geri bildirim: Olumlu ${fmtInt(good)} | Olumsuz ${fmtInt(bad)}`;
+      }
+
+      async function submitFeedback(payload, statusEl, buttons) {
+        const { city, district } = selectedArea();
+        for (const btn of buttons) {
+          btn.disabled = true;
+        }
+        statusEl.textContent = "Kaydediliyor...";
+        try {
+          const res = await fetch("/api/feedback", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              city,
+              district,
+              source: payload.source,
+              listingKey: payload.listingKey,
+              listingId: payload.listingId,
+              feedback: payload.feedback
+            })
+          });
+          const body = await res.json();
+          if (!res.ok || !body?.ok) {
+            throw new Error(body?.error || `HTTP ${res.status}`);
+          }
+          statusEl.textContent = `${feedbackStatusText(body.feedback)} (son oy: ${
+            payload.feedback === "good" ? "Gerçek fırsat" : "Zayıf fırsat"
+          })`;
+        } catch (error) {
+          statusEl.textContent = `Kaydedilemedi: ${String(error.message || error)}`;
+        } finally {
+          for (const btn of buttons) {
+            btn.disabled = false;
+          }
+        }
+      }
+
       function fillDistricts(cityName) {
         const row = locationData.find((x) => x.city === cityName);
         const districts = row ? row.districts : [];
@@ -735,6 +839,23 @@
           const creditSuitabilityRaw = reason.creditSuitabilityRaw ? escHtml(reason.creditSuitabilityRaw) : "-";
           const inSiteRaw = reason.inSiteRaw ? escHtml(reason.inSiteRaw) : "-";
           const usageStatusRaw = reason.usageStatusRaw ? escHtml(reason.usageStatusRaw) : "-";
+          const expectedNetGainTl = finiteOr(reason.expectedNetGainTl, d.expectedNetGainTl);
+          const transactionCostTl = finiteOr(reason.transactionCostTl, d.transactionCostEstimateTl);
+          const renovationCostTl = finiteOr(reason.renovationCostTl, d.renovationCostEstimateTl);
+          const netYieldPct = finiteOr(reason.netYieldPct, d.netYieldPct);
+          const riskAdjustedYieldPct = finiteOr(reason.riskAdjustedYieldPct, d.riskAdjustedYieldPct);
+          const riskScore = finiteOr(reason.totalRiskScore, d.riskScore);
+          const daysOnMarket = finiteOr(reason.daysOnMarket, d.daysOnMarket);
+          const historyPoints = finiteOr(reason.historyPoints);
+          const historyDropCount = finiteOr(reason.historyDropCount, d.historyPriceDropCount);
+          const historyChangeFromFirstPct = finiteOr(reason.historyChangeFromFirstPct);
+          const historyRecent30dChangePct = finiteOr(reason.historyRecent30dChangePct);
+          const crowdGood = finiteOr(reason.crowdFeedbackGood, d.feedback?.goodCount);
+          const crowdBad = finiteOr(reason.crowdFeedbackBad, d.feedback?.badCount);
+          const initialFeedbackText = feedbackStatusText({
+            goodCount: crowdGood,
+            badCount: crowdBad
+          });
           const comparables = Array.isArray(reason.topComparables)
             ? reason.topComparables
             : Array.isArray(d.topComparables)
@@ -781,6 +902,11 @@
               <div class="reason-line">Emsal medyan m² fiyatı: ${fmtMoney(compMedianPsm)}</div>
               <div class="reason-line">m² bazında fark: ${fmtPct(gapPct)}</div>
               <div class="reason-line">İndirim tutarı: ${fmtMoney(discountAmount)} (${fmtPct(discountPct)})</div>
+              <div class="reason-line">Masraf sonrası beklenen net kazanç: ${fmtMoney(expectedNetGainTl)} (${fmtPct(netYieldPct)})</div>
+              <div class="reason-line">Tahmini alım masrafı: ${fmtMoney(transactionCostTl)} | Tahmini yenileme: ${fmtMoney(renovationCostTl)}</div>
+              <div class="reason-line">Risk dengeli getiri: ${fmtPct(riskAdjustedYieldPct)} | Risk skoru: ${fmtPct(riskScore)}</div>
+              <div class="reason-line">İlanda kalma süresi: ${fmtDays(daysOnMarket)} | Geçmiş nokta: ${fmtInt(historyPoints)} | Fiyat düşüşü: ${fmtInt(historyDropCount)} kez</div>
+              <div class="reason-line">İlk ilana göre fiyat değişimi: ${fmtPct(historyChangeFromFirstPct)} | Son 30 gün trendi: ${fmtPct(historyRecent30dChangePct)}</div>
               <div class="reason-line">Güven skoru: ${fmtPct(confidence)} | Dağılım: ${fmtPct(dispersionRatio)} | Benzerlik ort.: ${fmtPct(avgSimilarity)}</div>
               <div class="reason-line">Kalite çarpanı: ${qualityMultiplier == null ? "-" : qualityMultiplier.toFixed(2)} | Boyut:${fmtPct(sizeScore)} Yaş:${fmtPct(freshnessScore)} Kat:${fmtPct(floorScore)}</div>
               <div class="reason-line">Hukuk/yaşam etkisi: Tapu:${fmtPct(tapuScore)} Kredi:${fmtPct(krediScore)} Site:${fmtPct(siteScore)} Kullanım:${fmtPct(usageScore)} Toplam kalite:${fmtPct(livabilityQuality)}</div>
@@ -797,8 +923,35 @@
               <div class="reason-title" style="margin-top:0.45rem">Kontrol için 3 emsal ilan</div>
               ${comparableLines || '<div class="reason-line">Emsal bulunamadı.</div>'}
             </div>
+            <div class="feedback-row">
+              <div class="feedback-actions">
+                <button class="fb-btn good" data-vote="good">Gerçek fırsat</button>
+                <button class="fb-btn bad" data-vote="bad">Zayıf fırsat</button>
+              </div>
+              <div class="fb-status">${escHtml(initialFeedbackText)}</div>
+            </div>
             <div><a href="${safeUrl}" target="_blank" rel="noopener noreferrer">İlanı aç</a></div>
           `;
+
+          const buttons = [...item.querySelectorAll(".fb-btn")];
+          const statusNode = item.querySelector(".fb-status");
+          for (const btn of buttons) {
+            btn.addEventListener("click", () => {
+              submitFeedback(
+                {
+                  source: d.source || "",
+                  listingKey: d.listingKey || "",
+                  listingId: d.listingId || "",
+                  feedback: btn.getAttribute("data-vote") || "good"
+                },
+                statusNode,
+                buttons
+              ).catch(() => {
+                statusNode.textContent = "Kaydedilemedi.";
+              });
+            });
+          }
+
           dealListEl.appendChild(item);
         }
       }

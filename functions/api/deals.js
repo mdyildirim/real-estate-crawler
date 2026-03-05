@@ -684,6 +684,204 @@ function buildScoringUniverse(rows) {
   };
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function makeListingCompositeKey(source, listingKey) {
+  return `${String(source || "")}::${String(listingKey || "")}`;
+}
+
+function listingCompositeKey(row) {
+  return makeListingCompositeKey(row?.source, row?.listingKey);
+}
+
+function toEpochMs(value) {
+  if (!value) {
+    return null;
+  }
+  const ms = Date.parse(String(value));
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function computeHistoryStats(entries) {
+  const points = entries
+    .map((row) => ({
+      priceTl: Number(row?.priceTl),
+      crawledAt: row?.crawledAt || null,
+      ms: toEpochMs(row?.crawledAt)
+    }))
+    .filter((row) => Number.isFinite(row.priceTl) && row.priceTl > 0 && Number.isFinite(row.ms))
+    .sort((a, b) => a.ms - b.ms);
+
+  if (!points.length) {
+    return null;
+  }
+
+  const prices = points.map((row) => row.priceTl);
+  const firstPrice = prices[0];
+  const latestPrice = prices[prices.length - 1];
+  const lowestPrice = Math.min(...prices);
+  const highestPrice = Math.max(...prices);
+  const firstMs = points[0].ms;
+  const latestMs = points[points.length - 1].ms;
+  const daysCovered = Math.max(0, (latestMs - firstMs) / DAY_MS);
+
+  let priceDropCount = 0;
+  let lastDropAt = null;
+  for (let i = 1; i < points.length; i += 1) {
+    const prev = points[i - 1].priceTl;
+    const next = points[i].priceTl;
+    if (next < prev * 0.995) {
+      priceDropCount += 1;
+      lastDropAt = points[i].crawledAt;
+    }
+  }
+
+  function changePctInWindow(days) {
+    const cutoffMs = latestMs - days * DAY_MS;
+    const baseline = points.find((row) => row.ms >= cutoffMs);
+    if (!baseline || !(baseline.priceTl > 0)) {
+      return null;
+    }
+    return (latestPrice - baseline.priceTl) / baseline.priceTl;
+  }
+
+  const meanPrice = prices.reduce((sum, n) => sum + n, 0) / prices.length;
+  const variance =
+    prices.reduce((sum, n) => sum + Math.pow(n - meanPrice, 2), 0) / Math.max(1, prices.length);
+  const priceVolatility = meanPrice > 0 ? Math.sqrt(variance) / meanPrice : null;
+  const changeFromFirstPct = firstPrice > 0 ? (latestPrice - firstPrice) / firstPrice : null;
+  const historyConfidence = clamp(
+    0.55 * clamp(points.length / 8, 0, 1) + 0.45 * clamp(daysCovered / 60, 0, 1),
+    0,
+    1
+  );
+
+  return {
+    points: points.length,
+    firstPrice,
+    latestPrice,
+    lowestPrice,
+    highestPrice,
+    firstSeenAt: points[0].crawledAt,
+    latestSeenAt: points[points.length - 1].crawledAt,
+    daysCovered,
+    changeFromFirstPct,
+    recent7dChangePct: changePctInWindow(7),
+    recent30dChangePct: changePctInWindow(30),
+    priceDropCount,
+    lastDropAt,
+    priceVolatility,
+    historyConfidence
+  };
+}
+
+async function loadHistoryStatsMap(DB, areaCity, areaDistrict, lookbackDays) {
+  const map = new Map();
+  const days = Math.max(30, Math.min(365, toInt(lookbackDays, 120)));
+  const rawWindow = `-${days} days`;
+  try {
+    const rowsRes = await DB.prepare(
+      `
+        SELECT
+          s.source,
+          s.listing_key AS listingKey,
+          s.price_tl AS priceTl,
+          s.crawled_at AS crawledAt
+        FROM listing_snapshots s
+        JOIN listings_current lc
+          ON lc.source = s.source
+         AND lc.listing_key = s.listing_key
+        JOIN crawl_runs r
+          ON r.id = s.run_id
+        WHERE lc.area_city = ?
+          AND lc.area_district = ?
+          AND lc.is_active = 1
+          AND r.area_city = ?
+          AND r.area_district = ?
+          AND s.price_tl IS NOT NULL
+          AND s.price_tl > 0
+          AND datetime(s.crawled_at) >= datetime('now', ?)
+        ORDER BY s.source ASC, s.listing_key ASC, datetime(s.crawled_at) ASC
+      `
+    )
+      .bind(areaCity, areaDistrict, areaCity, areaDistrict, rawWindow)
+      .all();
+
+    const grouped = new Map();
+    for (const row of rowsRes.results || []) {
+      const key = makeListingCompositeKey(row.source, row.listingKey);
+      if (!grouped.has(key)) {
+        grouped.set(key, []);
+      }
+      grouped.get(key).push({
+        priceTl: Number(row.priceTl),
+        crawledAt: row.crawledAt
+      });
+    }
+
+    for (const [key, entries] of grouped.entries()) {
+      const stats = computeHistoryStats(entries);
+      if (stats) {
+        map.set(key, stats);
+      }
+    }
+
+    return {
+      map,
+      lookbackDays: days,
+      snapshotRows: (rowsRes.results || []).length
+    };
+  } catch (error) {
+    console.log("Failed to load history stats:", error?.message || String(error));
+    return {
+      map,
+      lookbackDays: days,
+      snapshotRows: 0
+    };
+  }
+}
+
+async function loadFeedbackSummaryMap(DB, areaCity, areaDistrict) {
+  const map = new Map();
+  try {
+    const rowsRes = await DB.prepare(
+      `
+        SELECT
+          source,
+          listing_key AS listingKey,
+          SUM(CASE WHEN feedback = 'good' THEN 1 ELSE 0 END) AS goodCount,
+          SUM(CASE WHEN feedback = 'bad' THEN 1 ELSE 0 END) AS badCount
+        FROM deal_feedback
+        WHERE area_city = ?
+          AND area_district = ?
+        GROUP BY source, listing_key
+      `
+    )
+      .bind(areaCity, areaDistrict)
+      .all();
+
+    let totalVotes = 0;
+    for (const row of rowsRes.results || []) {
+      const goodCount = Number(row.goodCount || 0);
+      const badCount = Number(row.badCount || 0);
+      const totalCount = goodCount + badCount;
+      totalVotes += totalCount;
+      map.set(makeListingCompositeKey(row.source, row.listingKey), {
+        goodCount,
+        badCount,
+        totalCount,
+        netScore: goodCount - badCount
+      });
+    }
+
+    return { map, totalVotes };
+  } catch (error) {
+    // If the table is not migrated yet, continue without feedback signal.
+    console.log("Failed to load feedback summary:", error?.message || String(error));
+    return { map, totalVotes: 0 };
+  }
+}
+
 function safeLog(value) {
   return Math.log(Math.max(1, Number(value) || 0));
 }
@@ -1451,9 +1649,110 @@ function scoreDeal(target, rows, opts) {
     0,
     1
   );
+
+  const historyStats = opts.historyByKey?.get(listingCompositeKey(target)) || null;
+  const nowMs = Date.now();
+  const firstSeenMs = toEpochMs(target.firstSeenAt || historyStats?.firstSeenAt || target.lastSeenAt);
+  const daysOnMarket = Number.isFinite(firstSeenMs) ? Math.max(0, (nowMs - firstSeenMs) / DAY_MS) : null;
+  const historyPoints = Number(historyStats?.points || 0);
+  const historyDropCount = Number(historyStats?.priceDropCount || 0);
+  const historyChangeFromFirstPct = Number.isFinite(historyStats?.changeFromFirstPct)
+    ? historyStats.changeFromFirstPct
+    : null;
+  const historyRecent7dChangePct = Number.isFinite(historyStats?.recent7dChangePct)
+    ? historyStats.recent7dChangePct
+    : null;
+  const historyRecent30dChangePct = Number.isFinite(historyStats?.recent30dChangePct)
+    ? historyStats.recent30dChangePct
+    : null;
+  const historyVolatility = Number.isFinite(historyStats?.priceVolatility)
+    ? historyStats.priceVolatility
+    : null;
+  const historyConfidence = Number.isFinite(historyStats?.historyConfidence)
+    ? historyStats.historyConfidence
+    : clamp(historyPoints / 6, 0, 1);
+
   const livabilityQuality = clamp(target._qualityScore, 0, 1);
   const qualityMultiplier = 0.78 + livabilityQuality * 0.44;
-  let score = discountPct * confidence * qualityMultiplier;
+
+  const ageNorm = Number.isFinite(target._buildingAgeYears) ? clamp(target._buildingAgeYears / 30, 0, 1.5) : 0.55;
+  const usageRenovationPenalty =
+    target._usageCategory === "empty"
+      ? 0.08
+      : target._usageCategory === "owner"
+        ? 0.18
+        : target._usageCategory === "tenant"
+          ? 0.34
+          : 0.24;
+  const floorRenovationPenalty =
+    target._floorCategory === "middle"
+      ? 0.05
+      : target._floorCategory === "top"
+        ? 0.13
+        : target._floorCategory === "ground"
+          ? 0.16
+          : target._floorCategory === "basement"
+            ? 0.28
+            : 0.12;
+  const renovationUnitCost = 1200 + ageNorm * 2800 + usageRenovationPenalty * 1400 + floorRenovationPenalty * 900;
+  const renovationAssetFactor =
+    target._assetClass === "ofis" ? 0.65 : target._assetClass === "prefabrik" ? 0.55 : 1;
+  const renovationCostTl =
+    Number.isFinite(target._effectiveSqm) && target._effectiveSqm > 0
+      ? renovationUnitCost * target._effectiveSqm * renovationAssetFactor
+      : 0;
+  const transactionCostTl = Number.isFinite(target.priceTl) && target.priceTl > 0 ? target.priceTl * 0.055 : 0;
+  const expectedNetGainTl = fairPrice - target.priceTl - transactionCostTl - renovationCostTl;
+  const netYieldPct =
+    Number.isFinite(target.priceTl) && target.priceTl > 0 ? expectedNetGainTl / target.priceTl : null;
+  if (!Number.isFinite(netYieldPct) || expectedNetGainTl <= 0) {
+    return null;
+  }
+
+  const valuationRisk = clamp(
+    (1 - confidence) * 0.65 + dispersionRatio * 0.35 + (1 - clamp(avgSimilarity, 0, 1)) * 0.3,
+    0,
+    1
+  );
+  const legalRisk = clamp((1 - target._tapuScore) * 0.65 + (1 - target._krediScore) * 0.35, 0, 1);
+  const liquidityRisk = clamp(
+    (1 - target._usageScore) * 0.45 + (1 - target._siteScore) * 0.25 + (1 - target._floorScore) * 0.3,
+    0,
+    1
+  );
+  const staleRisk = Number.isFinite(daysOnMarket) ? clamp((daysOnMarket - 40) / 140, 0, 1) : 0.25;
+  const noDropRisk = Number.isFinite(daysOnMarket) && daysOnMarket > 45 && historyDropCount === 0 ? 0.28 : 0;
+  const recentIncreaseRisk =
+    Number.isFinite(historyRecent30dChangePct) && historyRecent30dChangePct > 0
+      ? clamp(historyRecent30dChangePct * 2, 0, 0.35)
+      : 0;
+  const volatilityRisk = Number.isFinite(historyVolatility) ? clamp(historyVolatility / 0.22, 0, 1) * 0.25 : 0.1;
+  const historyCoverageRisk = historyPoints >= 5 ? 0.08 : historyPoints >= 2 ? 0.2 : 0.35;
+  const historyRisk = clamp(
+    historyCoverageRisk + staleRisk * 0.35 + noDropRisk + recentIncreaseRisk + volatilityRisk,
+    0,
+    1
+  );
+
+  const totalRiskScore = clamp(
+    0.36 * valuationRisk + 0.24 * legalRisk + 0.17 * liquidityRisk + 0.23 * historyRisk,
+    0,
+    1
+  );
+  const riskPenaltyMultiplier = 1 + totalRiskScore * 1.35;
+  const riskAdjustedYieldPct = netYieldPct / riskPenaltyMultiplier;
+  let score = riskAdjustedYieldPct * (0.72 + confidence * 0.56) * qualityMultiplier;
+
+  const feedbackStats = opts.feedbackByKey?.get(listingCompositeKey(target)) || {
+    goodCount: 0,
+    badCount: 0,
+    totalCount: 0,
+    netScore: 0
+  };
+  const crowdTilt =
+    feedbackStats.totalCount >= 3 ? clamp(feedbackStats.netScore / feedbackStats.totalCount, -1, 1) : 0;
+  score *= 1 + crowdTilt * 0.12;
+
   const pricePerSqmGapPct = (fairPsm - target._pricePerSqm) / fairPsm;
 
   let endeksaMidPrice = null;
@@ -1529,6 +1828,14 @@ function scoreDeal(target, rows, opts) {
     fairPricePerSqm: fairPsm,
     discountPct,
     discountAmountTl: fairPrice - target.priceTl,
+    transactionCostEstimateTl: transactionCostTl,
+    renovationCostEstimateTl: renovationCostTl,
+    expectedNetGainTl,
+    netYieldPct,
+    riskAdjustedYieldPct,
+    riskScore: totalRiskScore,
+    daysOnMarket,
+    historyPriceDropCount: historyDropCount,
     confidence,
     score,
     comparableCount: comps.length,
@@ -1540,6 +1847,12 @@ function scoreDeal(target, rows, opts) {
     endeksaMinPrice: target.endeksaMinPrice || null,
     endeksaMaxPrice: target.endeksaMaxPrice || null,
     discountVsEndeksa,
+    feedback: {
+      goodCount: feedbackStats.goodCount,
+      badCount: feedbackStats.badCount,
+      totalCount: feedbackStats.totalCount,
+      netScore: feedbackStats.netScore
+    },
     topComparables,
     lastSeenAt: target.lastSeenAt,
     reasoning: {
@@ -1585,6 +1898,24 @@ function scoreDeal(target, rows, opts) {
       fairPriceEstimate: fairPrice,
       discountAmountTl: fairPrice - target.priceTl,
       discountPct,
+      transactionCostTl,
+      renovationCostTl,
+      expectedNetGainTl,
+      netYieldPct,
+      riskAdjustedYieldPct,
+      valuationRisk,
+      legalRisk,
+      liquidityRisk,
+      historyRisk,
+      totalRiskScore,
+      daysOnMarket,
+      historyPoints,
+      historyDropCount,
+      historyChangeFromFirstPct,
+      historyRecent7dChangePct,
+      historyRecent30dChangePct,
+      historyVolatility,
+      historyConfidence,
       confidence,
       dispersionRatio,
       averageComparableSimilarity: avgSimilarity,
@@ -1593,6 +1924,11 @@ function scoreDeal(target, rows, opts) {
       avgPriceForSale: target.avgPriceForSale || null,
       endeksaMidPrice,
       discountVsEndeksa,
+      crowdFeedbackGood: feedbackStats.goodCount,
+      crowdFeedbackBad: feedbackStats.badCount,
+      crowdFeedbackNet: feedbackStats.netScore,
+      crowdFeedbackTotal: feedbackStats.totalCount,
+      crowdTilt,
       topComparables
     }
   };
@@ -1615,6 +1951,7 @@ export async function onRequestGet(context) {
   const minSameNeighborhoodComps = Math.max(1, Math.min(20, toInt(url.searchParams.get("min_same_neighborhood_comps"), 3)));
   const useModel = toBool(url.searchParams.get("use_model"), true);
   const modelLambda = clamp(toFloat(url.searchParams.get("model_lambda"), 8), 0.01, 1000);
+  const historyLookbackDays = Math.max(30, Math.min(365, toInt(url.searchParams.get("history_lookback_days"), 120)));
 
   const rowsRes = await DB.prepare(
     `
@@ -1639,6 +1976,7 @@ export async function onRequestGet(context) {
         avg_price_for_sale AS avgPriceForSale,
         endeksa_min_price AS endeksaMinPrice,
         endeksa_max_price AS endeksaMaxPrice,
+        first_seen_at AS firstSeenAt,
         last_seen_at AS lastSeenAt
       FROM listings_current
       WHERE area_city = ?
@@ -1663,6 +2001,8 @@ export async function onRequestGet(context) {
   const universe = buildScoringUniverse(valid);
   const scoringRows = universe.rows;
   const model = useModel ? trainRidgeModel(scoringRows, { lambda: modelLambda }) : null;
+  const historyInfo = await loadHistoryStatsMap(DB, areaCity, areaDistrict, historyLookbackDays);
+  const feedbackInfo = await loadFeedbackSummaryMap(DB, areaCity, areaDistrict);
 
   const scored = [];
   for (const listing of scoringRows) {
@@ -1670,7 +2010,9 @@ export async function onRequestGet(context) {
       minComps,
       strictSameNeighborhood,
       minSameNeighborhoodComps,
-      model
+      model,
+      historyByKey: historyInfo.map,
+      feedbackByKey: feedbackInfo.map
     });
     if (!deal) {
       continue;
@@ -1706,7 +2048,11 @@ export async function onRequestGet(context) {
         "outlier temizliği",
         "dedup kümesi",
         "emsal benzerlik güveni",
-        "Endeksa karşılaştırması"
+        "Endeksa karşılaştırması",
+        "ilan geçmişi (fiyat düşüşü/tempo)",
+        "masraf tahmini (işlem + yenileme)",
+        "risk dengeli net getiri",
+        "saha geri bildirimi"
       ]
     },
     params: {
@@ -1717,7 +2063,8 @@ export async function onRequestGet(context) {
       strictSameNeighborhood,
       minSameNeighborhoodComps,
       useModel,
-      modelLambda
+      modelLambda,
+      historyLookbackDays
     },
     totals: {
       activeListings: rows.length,
@@ -1726,6 +2073,9 @@ export async function onRequestGet(context) {
       listingsAfterDedup: scoringRows.length,
       filteredOutliers: universe.filteredOut,
       dedupedListings: universe.dedupedOut,
+      historySnapshotRows: historyInfo.snapshotRows,
+      listingsWithHistory: historyInfo.map.size,
+      feedbackVotes: feedbackInfo.totalVotes,
       modelTrainingRows: model?.trainRows ?? 0,
       modelTrainMape: model?.trainMAPE ?? null,
       dealsMatched: scored.length
