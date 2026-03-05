@@ -1,14 +1,11 @@
-# Turkiye Real-Estate Crawler (Prototype)
+# Multi-Country Real-Estate Crawler (TR + ES)
 
-Prototype crawler that can run for any `city/district` in Turkiye, store results in local SQLite, and publish to Cloudflare Pages + D1.
+Prototype crawler that can run for `city/district` areas in Turkiye (`TR`) and Spain (`ES`), store results in local SQLite, and publish to Cloudflare Pages + D1.
 
 ## Included Sources
 
-- `emlakjet` (primary working source for city/district-wide crawling)
-- `sahibinden` (currently often challenge/blocked in this prototype mode)
-- `hepsiemlak` (browser-rendered Playwright mode; still frequently challenge-blocked)
-- `atasehirsatilik` (Ataşehir-specific extra source)
-- `turyap_251316` (Ataşehir office page, filtered by address)
+- `TR`: `emlakjet`, `sahibinden`, `hepsiemlak`, `atasehirsatilik`, `turyap_251316`
+- `ES`: `pisos`
 
 ## Local Usage
 
@@ -26,6 +23,12 @@ Run specific city/district:
 
 ```bash
 npm run crawl -- --city=Ankara --district=Cankaya --sources=emlakjet
+```
+
+Run Spain (city + district slug aware):
+
+```bash
+npm run crawl -- --country=ES --city=Madrid --district="Madrid Capital" --district-slug=madrid_capital_zona_urbana --sources=pisos
 ```
 
 Control detail fetch cap for Emlakjet listing pages (feature extraction):
@@ -72,6 +75,7 @@ Schema:
 - `db/migrations/0003_system_logs.sql`
 - `db/migrations/0004_listing_legal_usage_signals.sql`
 - `db/migrations/0005_deal_feedback.sql`
+- `db/migrations/0006_area_country.sql`
 
 ## Output Files
 
@@ -120,22 +124,26 @@ Open `/` after deployment (or `wrangler pages dev public`).
 
 UI features:
 
-- select any city in Turkiye
+- select country (`TR` / `ES`)
+- select city in selected country
 - select district in that city
 - start scan with one button
 - auto-refresh results from D1
 - view top undervalued listings
 - optional technical log panel for troubleshooting
 
-City/district options come from `public/tr-locations.json` (81 cities / 973 districts).
+Location options come from:
+
+- `public/tr-locations.json`
+- `public/es-locations.json`
 
 ## Pages Functions API
 
 - `GET /api/health`
-- `GET /api/runs?city=Istanbul&district=Atasehir&limit=20`
-- `GET /api/listings?city=Istanbul&district=Atasehir&active=1&limit=50`
-- `GET /api/deals?city=Istanbul&district=Atasehir&limit=25&min_discount=0.12&min_confidence=0.35&min_comps=6`
-- `GET /api/logs?city=Istanbul&district=Atasehir&limit=50`
+- `GET /api/runs?country=TR&city=Istanbul&district=Atasehir&limit=20`
+- `GET /api/listings?country=TR&city=Istanbul&district=Atasehir&active=1&limit=50`
+- `GET /api/deals?country=TR&city=Istanbul&district=Atasehir&limit=25&min_discount=0.12&min_confidence=0.35&min_comps=6`
+- `GET /api/logs?country=TR&city=Istanbul&district=Atasehir&limit=50`
 - `POST /api/ingest`
 - `POST /api/crawl-request`
 
@@ -159,6 +167,8 @@ This project includes:
 
 - `workflow_dispatch` for manual/API trigger (used by UI)
 - `schedule` with `cron: "30 */6 * * *"`
+
+`workflow_dispatch` supports: `country`, `city`, `district`, `city_slug`, `district_slug`, `sources`.
 
 That schedule is effectively a cron job in GitHub Actions (runs every 6 hours, in UTC).
 

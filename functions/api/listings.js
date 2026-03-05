@@ -23,6 +23,22 @@ function normalizeBoolFlag(value, fallback = true) {
   return !["0", "false", "no"].includes(String(value).toLowerCase());
 }
 
+const AREA_DEFAULTS = {
+  TR: { city: "Istanbul", district: "Atasehir" },
+  ES: { city: "Madrid", district: "Madrid Capital" }
+};
+
+function canonicalCountryCode(value, fallback = "TR") {
+  const raw = String(value || fallback || "TR")
+    .trim()
+    .toUpperCase();
+  return Object.prototype.hasOwnProperty.call(AREA_DEFAULTS, raw) ? raw : fallback;
+}
+
+function areaDefaultsForCountry(country) {
+  return AREA_DEFAULTS[canonicalCountryCode(country)] || AREA_DEFAULTS.TR;
+}
+
 function canonicalAreaName(value, fallback) {
   const raw = String(value || fallback || "")
     .replace(/\s+/g, " ")
@@ -31,13 +47,11 @@ function canonicalAreaName(value, fallback) {
     return String(fallback || "");
   }
   const ascii = raw
-    .toLocaleLowerCase("tr-TR")
-    .replace(/ç/g, "c")
-    .replace(/ğ/g, "g")
+    .replace(/İ/g, "I")
     .replace(/ı/g, "i")
-    .replace(/ö/g, "o")
-    .replace(/ş/g, "s")
-    .replace(/ü/g, "u")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
     .replace(/[^a-z0-9 ]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -61,11 +75,13 @@ export async function onRequestGet(context) {
   const offset = Math.max(0, toInt(url.searchParams.get("offset"), 0));
   const source = (url.searchParams.get("source") || "").trim();
   const activeOnly = normalizeBoolFlag(url.searchParams.get("active"), true);
-  const areaCity = canonicalAreaName(url.searchParams.get("city"), "Istanbul");
-  const areaDistrict = canonicalAreaName(url.searchParams.get("district"), "Atasehir");
+  const areaCountry = canonicalCountryCode(url.searchParams.get("country"), "TR");
+  const defaults = areaDefaultsForCountry(areaCountry);
+  const areaCity = canonicalAreaName(url.searchParams.get("city"), defaults.city);
+  const areaDistrict = canonicalAreaName(url.searchParams.get("district"), defaults.district);
 
-  const where = ["area_city = ?", "area_district = ?"];
-  const binds = [areaCity, areaDistrict];
+  const where = ["area_country = ?", "area_city = ?", "area_district = ?"];
+  const binds = [areaCountry, areaCity, areaDistrict];
 
   if (source) {
     where.push("source = ?");
@@ -97,6 +113,7 @@ export async function onRequestGet(context) {
       avg_price_for_sale AS avgPriceForSale,
       endeksa_min_price AS endeksaMinPrice,
       endeksa_max_price AS endeksaMaxPrice,
+      area_country AS areaCountry,
       area_city AS areaCity,
       area_district AS areaDistrict,
       first_seen_at AS firstSeenAt,
@@ -116,7 +133,7 @@ export async function onRequestGet(context) {
 
   return json({
     ok: true,
-    area: { city: areaCity, district: areaDistrict },
+    area: { country: areaCountry, city: areaCity, district: areaDistrict },
     source: source || null,
     activeOnly,
     limit,

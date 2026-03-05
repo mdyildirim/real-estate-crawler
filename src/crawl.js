@@ -11,51 +11,83 @@ const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_CONCURRENCY = 4;
 const DEFAULT_OUTPUT_DIR = "output";
 const DEFAULT_SQLITE_PATH = "data/real-estate.sqlite";
+const DEFAULT_COUNTRY = "TR";
 const execFileAsync = promisify(execFile);
 const BROWSER_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
-const SOURCE_DEFS = {
-  sahibinden: {
-    source: "sahibinden",
-    urlForArea: (area) =>
-      `https://www.sahibinden.com/satilik-daire/${toTurkishSlug(area.city)}-${toTurkishSlug(area.district)}`,
-    crawl: crawlCloudflareProneSource
+const COUNTRY_DEFAULTS = {
+  TR: {
+    city: "Istanbul",
+    district: "Atasehir"
   },
-  hepsiemlak: {
-    source: "hepsiemlak",
-    urlForArea: (area) => `https://www.hepsiemlak.com/${toTurkishSlug(area.city)}-${toTurkishSlug(area.district)}-satilik`,
-    crawl: crawlHepsiemlak
+  ES: {
+    city: "Madrid",
+    district: "Madrid Capital",
+    citySlug: "madrid",
+    districtSlug: "madrid_capital_zona_urbana"
+  }
+};
+
+const SOURCE_DEFS_BY_COUNTRY = {
+  TR: {
+    sahibinden: {
+      source: "sahibinden",
+      urlForArea: (area) =>
+        `https://www.sahibinden.com/satilik-daire/${toTurkishSlug(area.citySlug || area.city)}-${toTurkishSlug(area.districtSlug || area.district)}`,
+      crawl: crawlCloudflareProneSource
+    },
+    hepsiemlak: {
+      source: "hepsiemlak",
+      urlForArea: (area) =>
+        `https://www.hepsiemlak.com/${toTurkishSlug(area.citySlug || area.city)}-${toTurkishSlug(area.districtSlug || area.district)}-satilik`,
+      crawl: crawlHepsiemlak
+    },
+    emlakjet: {
+      source: "emlakjet",
+      urlForArea: (area) =>
+        `https://www.emlakjet.com/satilik-konut/${toTurkishSlug(area.citySlug || area.city)}-${toTurkishSlug(area.districtSlug || area.district)}`,
+      crawl: crawlEmlakjet
+    },
+    atasehirsatilik: {
+      source: "atasehirsatilik",
+      urlForArea: (area) =>
+        isAtasehirArea(area) ? "https://atasehirsatilik.com/sitemap.php" : null,
+      crawl: crawlAtasehirSatilik
+    },
+    turyap_251316: {
+      source: "turyap_251316",
+      urlForArea: (area) =>
+        isAtasehirArea(area) ? "https://www.turyap.com.tr/Portfoyler.aspx?SirketID=251316" : null,
+      crawl: crawlTuryapOffice251316
+    }
   },
-  emlakjet: {
-    source: "emlakjet",
-    urlForArea: (area) =>
-      `https://www.emlakjet.com/satilik-konut/${toTurkishSlug(area.city)}-${toTurkishSlug(area.district)}`,
-    crawl: crawlEmlakjet
-  },
-  atasehirsatilik: {
-    source: "atasehirsatilik",
-    urlForArea: (area) =>
-      isAtasehirArea(area) ? "https://atasehirsatilik.com/sitemap.php" : null,
-    crawl: crawlAtasehirSatilik
-  },
-  turyap_251316: {
-    source: "turyap_251316",
-    urlForArea: (area) =>
-      isAtasehirArea(area) ? "https://www.turyap.com.tr/Portfoyler.aspx?SirketID=251316" : null,
-    crawl: crawlTuryapOffice251316
+  ES: {
+    pisos: {
+      source: "pisos",
+      urlForArea: (area) => {
+        const districtSlug = toPisosSlug(area.districtSlug || area.district);
+        if (districtSlug) {
+          return `https://www.pisos.com/venta/pisos-${districtSlug}/`;
+        }
+        const citySlug = toPisosSlug(area.citySlug || area.city);
+        return citySlug ? `https://www.pisos.com/venta/pisos-${citySlug}/` : null;
+      },
+      crawl: crawlPisos
+    }
   }
 };
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
+  const sourceDefs = getSourceDefsForCountry(opts.area.country);
   const startedAt = new Date().toISOString();
   const runTag = formatRunTag(new Date());
-  const selectedSourceKeys = resolveSources(opts.sources);
+  const selectedSourceKeys = resolveSources(opts.sources, sourceDefs);
 
   const results = [];
   for (const key of selectedSourceKeys) {
-    const baseDef = SOURCE_DEFS[key];
+    const baseDef = sourceDefs[key];
     const resolvedUrl = typeof baseDef.urlForArea === "function" ? baseDef.urlForArea(opts.area) : baseDef.url;
     if (!resolvedUrl) {
       results.push({
@@ -99,8 +131,11 @@ async function main() {
     startedAt,
     finishedAt: new Date().toISOString(),
     area: {
+      country: opts.area.country,
       city: opts.area.city,
-      district: opts.area.district
+      district: opts.area.district,
+      citySlug: opts.area.citySlug || "",
+      districtSlug: opts.area.districtSlug || ""
     },
     sourceSummaries: results.map((r) => ({
       source: r.source,
@@ -158,10 +193,14 @@ async function main() {
 }
 
 function parseArgs(argv) {
+  const defaultArea = COUNTRY_DEFAULTS[DEFAULT_COUNTRY] || COUNTRY_DEFAULTS.TR;
   const opts = {
     area: {
-      city: "Istanbul",
-      district: "Atasehir"
+      country: DEFAULT_COUNTRY,
+      city: defaultArea.city,
+      district: defaultArea.district,
+      citySlug: defaultArea.citySlug || "",
+      districtSlug: defaultArea.districtSlug || ""
     },
     sources: "all",
     timeoutMs: DEFAULT_TIMEOUT_MS,
@@ -170,6 +209,7 @@ function parseArgs(argv) {
     hepsiemlakMaxPages: 24,
     hepsiemlakWaitChallengeMs: 45000,
     hepsiemlakDetailMax: 60,
+    pisosMaxPages: 24,
     outputDir: DEFAULT_OUTPUT_DIR,
     writeOutput: true,
     writeSqlite: true,
@@ -181,12 +221,18 @@ function parseArgs(argv) {
       opts.writeOutput = false;
     } else if (arg === "--no-sqlite") {
       opts.writeSqlite = false;
+    } else if (arg.startsWith("--country=")) {
+      opts.area.country = normalizeCountryCode(arg.slice("--country=".length));
     } else if (arg.startsWith("--sources=")) {
       opts.sources = arg.slice("--sources=".length);
     } else if (arg.startsWith("--city=")) {
-      opts.area.city = normalizeAreaName(arg.slice("--city=".length) || "Istanbul");
+      opts.area.city = normalizeAreaName(arg.slice("--city=".length) || "");
     } else if (arg.startsWith("--district=")) {
-      opts.area.district = normalizeAreaName(arg.slice("--district=".length) || "Atasehir");
+      opts.area.district = normalizeAreaName(arg.slice("--district=".length) || "");
+    } else if (arg.startsWith("--city-slug=")) {
+      opts.area.citySlug = normalizeAreaName(arg.slice("--city-slug=".length) || "");
+    } else if (arg.startsWith("--district-slug=")) {
+      opts.area.districtSlug = normalizeAreaName(arg.slice("--district-slug=".length) || "");
     } else if (arg.startsWith("--timeout-ms=")) {
       opts.timeoutMs = toPositiveInt(arg.slice("--timeout-ms=".length), DEFAULT_TIMEOUT_MS);
     } else if (arg.startsWith("--concurrency=")) {
@@ -199,6 +245,8 @@ function parseArgs(argv) {
       opts.hepsiemlakWaitChallengeMs = toPositiveInt(arg.slice("--hepsiemlak-wait-ms=".length), 45000);
     } else if (arg.startsWith("--hepsiemlak-detail-max=")) {
       opts.hepsiemlakDetailMax = toPositiveInt(arg.slice("--hepsiemlak-detail-max=".length), 60);
+    } else if (arg.startsWith("--pisos-max-pages=")) {
+      opts.pisosMaxPages = toPositiveInt(arg.slice("--pisos-max-pages=".length), 24);
     } else if (arg.startsWith("--output-dir=")) {
       opts.outputDir = arg.slice("--output-dir=".length) || DEFAULT_OUTPUT_DIR;
     } else if (arg.startsWith("--sqlite-path=")) {
@@ -206,28 +254,51 @@ function parseArgs(argv) {
     }
   }
 
+  const defaults = COUNTRY_DEFAULTS[opts.area.country] || COUNTRY_DEFAULTS[DEFAULT_COUNTRY];
   if (!opts.area.city) {
-    opts.area.city = "Istanbul";
+    opts.area.city = defaults?.city || "Istanbul";
   }
   if (!opts.area.district) {
-    opts.area.district = "Atasehir";
+    opts.area.district = defaults?.district || "Atasehir";
+  }
+  if (!opts.area.citySlug) {
+    opts.area.citySlug = defaults?.citySlug || "";
+  }
+  if (!opts.area.districtSlug) {
+    opts.area.districtSlug = defaults?.districtSlug || "";
   }
 
   return opts;
 }
 
-function resolveSources(rawSources) {
+function normalizeCountryCode(value) {
+  const upper = String(value || DEFAULT_COUNTRY)
+    .trim()
+    .toUpperCase();
+  return Object.prototype.hasOwnProperty.call(SOURCE_DEFS_BY_COUNTRY, upper) ? upper : DEFAULT_COUNTRY;
+}
+
+function getSourceDefsForCountry(countryCode) {
+  const resolved = normalizeCountryCode(countryCode);
+  return SOURCE_DEFS_BY_COUNTRY[resolved] || SOURCE_DEFS_BY_COUNTRY[DEFAULT_COUNTRY];
+}
+
+function resolveSources(rawSources, sourceDefs) {
+  const keys = Object.keys(sourceDefs || {});
+  if (keys.length === 0) {
+    return [];
+  }
   if (!rawSources || rawSources === "all") {
-    return Object.keys(SOURCE_DEFS);
+    return keys;
   }
 
   const requested = rawSources
     .split(",")
     .map((x) => x.trim())
     .filter(Boolean);
-  const valid = requested.filter((x) => Object.prototype.hasOwnProperty.call(SOURCE_DEFS, x));
+  const valid = requested.filter((x) => Object.prototype.hasOwnProperty.call(sourceDefs, x));
   if (valid.length === 0) {
-    return Object.keys(SOURCE_DEFS);
+    return keys;
   }
   return valid;
 }
@@ -281,6 +352,216 @@ async function crawlCloudflareProneSource(ctx) {
     notes: listings.length ? [] : ["No listing links parsed from non-blocked response."],
     listings
   };
+}
+
+async function crawlPisos(ctx) {
+  const { def } = ctx;
+  const fetchedAt = new Date().toISOString();
+  const notes = [];
+  const rootHtml = await fetchTextWithBlockFallback(def.url, ctx.timeoutMs, {
+    acceptLanguage: "es-ES,es;q=0.9,en;q=0.8"
+  });
+
+  if (isCloudflareBlocked(rootHtml)) {
+    return {
+      source: def.source,
+      url: def.url,
+      status: "blocked",
+      blocked: true,
+      observedTotal: null,
+      fetchedAt,
+      notes: ["Anti-bot challenge detected on pisos.com main page."],
+      listings: []
+    };
+  }
+
+  const rootCards = parsePisosListingCards(rootHtml, ctx.area);
+  const observedTotal = parsePisosObservedTotal(rootHtml);
+  const pageUrls = buildPisosPageUrls(def.url, rootHtml, observedTotal, rootCards.length, ctx.pisosMaxPages || 24);
+  const remainingPageUrls = pageUrls.slice(1);
+
+  const pageResults = await mapLimit(remainingPageUrls, ctx.concurrency, async (pageUrl) => {
+    try {
+      const html = await fetchTextWithBlockFallback(pageUrl, ctx.timeoutMs, {
+        acceptLanguage: "es-ES,es;q=0.9,en;q=0.8"
+      });
+      if (isCloudflareBlocked(html)) {
+        return { pageUrl, blocked: true, cards: [] };
+      }
+      return { pageUrl, blocked: false, cards: parsePisosListingCards(html, ctx.area) };
+    } catch (error) {
+      return { pageUrl, blocked: false, cards: [], error: normalizeError(error) };
+    }
+  });
+
+  const blockedPages = pageResults.filter((x) => x.blocked).length;
+  const errorPages = pageResults.filter((x) => x.error).length;
+  const cards = uniqueBy(
+    [...rootCards, ...pageResults.flatMap((x) => x.cards || [])],
+    (x) => x.url
+  );
+
+  const listings = cards.map((row) =>
+    createListing(def.source, row.listingId, row.url, {
+      title: row.title,
+      address: row.address,
+      neighborhood: row.neighborhood,
+      roomCount: row.roomCount,
+      priceTl: row.priceTl,
+      grossSqm: row.grossSqm
+    })
+  );
+
+  notes.push(`Fetched ${Math.max(1, pageUrls.length - blockedPages)}/${pageUrls.length} pisos.com page(s).`);
+  if (blockedPages > 0) {
+    notes.push(`${blockedPages} page(s) were challenge-blocked.`);
+  }
+  if (errorPages > 0) {
+    notes.push(`${errorPages} page(s) failed to fetch.`);
+  }
+  if (listings.length === 0) {
+    notes.push("No listing cards parsed from rendered pages.");
+  }
+
+  return {
+    source: def.source,
+    url: def.url,
+    status: listings.length > 0 ? "ok" : "blocked",
+    blocked: listings.length === 0,
+    observedTotal,
+    fetchedAt,
+    notes,
+    listings
+  };
+}
+
+function buildPisosPageUrls(baseUrl, html, observedTotal, firstPageCount, maxPages) {
+  const normalizedBaseUrl = normalizePisosBaseUrl(baseUrl);
+  const pageNumbersFromHtml = [...html.matchAll(/\/venta\/pisos-[^"'<>?#]+\/(\d+)\/?/gi)]
+    .map((m) => toPositiveInt(m[1], null))
+    .filter((x) => x !== null);
+
+  let targetPageCount = pageNumbersFromHtml.length ? Math.max(...pageNumbersFromHtml) : 1;
+  const perPageGuess = Math.max(1, Number(firstPageCount) || 30);
+  if (Number.isFinite(observedTotal) && observedTotal > 0) {
+    const estimated = Math.ceil(observedTotal / perPageGuess);
+    if (estimated > targetPageCount) {
+      targetPageCount = estimated;
+    }
+  }
+  targetPageCount = Math.max(1, Math.min(targetPageCount, Math.max(1, maxPages || 24)));
+
+  const out = [normalizedBaseUrl];
+  for (let page = 2; page <= targetPageCount; page += 1) {
+    out.push(`${normalizedBaseUrl}${page}/`);
+  }
+  return uniqueBy(out, (x) => x);
+}
+
+function normalizePisosBaseUrl(url) {
+  const cleaned = String(url || "")
+    .trim()
+    .replace(/[#?].*$/, "");
+  const noPageSuffix = cleaned.replace(/\/\d+\/?$/, "/");
+  return noPageSuffix.endsWith("/") ? noPageSuffix : `${noPageSuffix}/`;
+}
+
+function parsePisosObservedTotal(html) {
+  const byHeading = extractRegexGroup(html, /<h1[^>]*>[\s\S]*?<span>\s*([0-9][0-9.,]*)\s+resultados/i);
+  if (byHeading) {
+    return toPositiveInt(parseLooseNumber(byHeading), null);
+  }
+  const byMeta = extractRegexGroup(html, /<meta[^>]+name="description"[^>]+content="([0-9][0-9.,]*)[^"]*pisos/i);
+  if (byMeta) {
+    return toPositiveInt(parseLooseNumber(byMeta), null);
+  }
+  return null;
+}
+
+function parsePisosListingCards(html, area) {
+  const rows = [];
+  const seen = new Set();
+  const cardRegex = /<div id="[^"]+" class="ad-preview[\s\S]*?(?=<div id="[^"]+" class="ad-preview|$)/gi;
+
+  for (const match of html.matchAll(cardRegex)) {
+    const blockRaw = match[0] || "";
+    const relative = decodeHtml(extractRegexGroup(blockRaw, /data-lnk-href="([^"]+)"/i));
+    if (!relative || !/^\/comprar\//i.test(relative)) {
+      continue;
+    }
+    const absolute = toAbsoluteUrl("https://www.pisos.com", relative);
+    if (seen.has(absolute)) {
+      continue;
+    }
+    seen.add(absolute);
+    const block = decodeHtml(blockRaw);
+
+    const title = cleanTitle(decodeHtml(extractRegexGroup(block, /class="ad-preview__title">([^<]+)</i)));
+    const subtitle = cleanTitle(decodeHtml(extractRegexGroup(block, /class="ad-preview__subtitle">([^<]+)</i)));
+    const priceFromData = parseLooseNumber(extractRegexGroup(block, /data-ad-price="([0-9.]+)"/i));
+    const priceText = decodeHtml(extractRegexGroup(block, /class="ad-preview__price">\s*([^<]+)</i));
+    const description = cleanTitle(
+      decodeHtml(stripTags(extractRegexGroup(block, /class="ad-preview__description">([\s\S]*?)<\/p>/i)))
+    );
+    const neighborhood = parsePisosNeighborhoodFromUrl(absolute);
+    const listingId = parsePisosListingId(absolute);
+    const roomCountRaw = parsePisosRoomCount(`${title} ${subtitle} ${description}`);
+    const grossSqmRaw = parsePisosSqm(`${title} ${subtitle} ${description} ${block}`);
+
+    rows.push({
+      listingId,
+      url: absolute,
+      title: title || slugToTitle(absolute),
+      address: subtitle || `${area.city} / ${area.district}`,
+      neighborhood: neighborhood || area.district || "",
+      roomCount: roomCountRaw,
+      priceTl: firstFiniteNumber([priceFromData, parseLooseNumber(priceText)]),
+      grossSqm: grossSqmRaw
+    });
+  }
+
+  return rows;
+}
+
+function parsePisosListingId(urlText) {
+  const m = String(urlText || "").match(/-([0-9]+)_([0-9]+)\/?$/);
+  if (m) {
+    return m[1];
+  }
+  return extractTrailingNumber(String(urlText || ""));
+}
+
+function parsePisosRoomCount(text) {
+  const m = String(text || "").match(/([0-9]{1,2})\s*(?:habitaciones?|dormitorios?|dorm\.?)/i);
+  return m ? String(m[1]) : "";
+}
+
+function parsePisosSqm(text) {
+  const m = String(text || "").match(/([0-9]{2,4}(?:[.,][0-9]+)?)\s*m(?:\u00B2|²|2)/i);
+  return m ? parseLooseNumber(m[1]) : null;
+}
+
+function parsePisosNeighborhoodFromUrl(urlText) {
+  try {
+    const segment = (new URL(urlText).pathname.split("/")[2] || "").replace(/^comprar\/?/i, "");
+    const withoutType = segment.replace(/^[^-]+-/, "");
+    const withoutId = withoutType.replace(/-[0-9]+_[0-9]+\/?$/, "");
+    const withoutZip = withoutId.replace(/[0-9]{5}$/g, "");
+    const cleaned = withoutZip
+      .replace(/_/g, " ")
+      .replace(/-+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!cleaned) {
+      return "";
+    }
+    return cleaned
+      .split(" ")
+      .map((part) => part.charAt(0).toLocaleUpperCase("es-ES") + part.slice(1))
+      .join(" ");
+  } catch {
+    return "";
+  }
 }
 
 async function crawlHepsiemlak(ctx) {
@@ -854,8 +1135,8 @@ function buildHepsiemlakPageUrls(baseUrl, domPageCount, observedTotal, firstPage
 }
 
 function buildHepsiemlakCandidateUrls(area, fallbackUrl) {
-  const districtSlug = toTurkishSlug(area?.district || "");
-  const citySlug = toTurkishSlug(area?.city || "");
+  const districtSlug = toTurkishSlug(area?.districtSlug || area?.district || "");
+  const citySlug = toTurkishSlug(area?.citySlug || area?.city || "");
   const candidates = [];
   if (fallbackUrl) {
     candidates.push(fallbackUrl);
@@ -1353,7 +1634,8 @@ async function crawlTuryapOffice251316(ctx) {
   };
 }
 
-async function fetchText(url, timeoutMs) {
+async function fetchText(url, timeoutMs, options = {}) {
+  const acceptLanguage = options.acceptLanguage || "tr-TR,tr;q=0.9,en;q=0.8";
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -1362,7 +1644,7 @@ async function fetchText(url, timeoutMs) {
       headers: {
         "user-agent": BROWSER_UA,
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "accept-language": "tr-TR,tr;q=0.9,en;q=0.8"
+        "accept-language": acceptLanguage
       },
       signal: controller.signal
     });
@@ -1372,7 +1654,8 @@ async function fetchText(url, timeoutMs) {
   }
 }
 
-async function fetchTextViaCurl(url, timeoutMs) {
+async function fetchTextViaCurl(url, timeoutMs, options = {}) {
+  const acceptLanguage = options.acceptLanguage || "tr-TR,tr;q=0.9,en;q=0.8";
   const maxTimeSec = Math.max(5, Math.ceil(timeoutMs / 1000));
   const args = [
     "-sS",
@@ -1384,7 +1667,7 @@ async function fetchTextViaCurl(url, timeoutMs) {
     "-H",
     "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "-H",
-    "Accept-Language: tr-TR,tr;q=0.9,en;q=0.8",
+    `Accept-Language: ${acceptLanguage}`,
     url
   ];
   const { stdout } = await execFileAsync("curl", args, {
@@ -1393,16 +1676,16 @@ async function fetchTextViaCurl(url, timeoutMs) {
   return stdout;
 }
 
-async function fetchTextWithBlockFallback(url, timeoutMs) {
+async function fetchTextWithBlockFallback(url, timeoutMs, options = {}) {
   try {
-    const html = await fetchText(url, timeoutMs);
+    const html = await fetchText(url, timeoutMs, options);
     if (!isCloudflareBlocked(html)) {
       return html;
     }
   } catch {
     // fallback below
   }
-  return fetchTextViaCurl(url, timeoutMs);
+  return fetchTextViaCurl(url, timeoutMs, options);
 }
 
 function isCloudflareBlocked(text) {
@@ -1411,6 +1694,9 @@ function isCloudflareBlocked(text) {
     lower.includes("just a moment") ||
     lower.includes("bir dakika lutfen") ||
     lower.includes("enable javascript and cookies to continue") ||
+    lower.includes("please enable js and disable any ad blocker") ||
+    lower.includes("captcha-delivery.com") ||
+    lower.includes("sentimos la interrupcion") ||
     lower.includes("guvenlik dogrulamasi gerceklestirme") ||
     lower.includes("web sitesi bir bot olmadiginizi dogruladiktan sonra") ||
     lower.includes("cloudflare ile performans ve guvenlik") ||
@@ -1750,7 +2036,30 @@ function parseLooseNumber(text) {
   if (!cleaned) {
     return null;
   }
-  const normalized = cleaned.includes(",") && !cleaned.includes(".") ? cleaned.replace(",", ".") : cleaned.replace(/,/g, "");
+  const dotCount = (cleaned.match(/\./g) || []).length;
+  const commaCount = (cleaned.match(/,/g) || []).length;
+  let normalized = cleaned;
+
+  if (dotCount > 0 && commaCount > 0) {
+    const lastDot = cleaned.lastIndexOf(".");
+    const lastComma = cleaned.lastIndexOf(",");
+    if (lastComma > lastDot) {
+      normalized = cleaned.replace(/\./g, "").replace(",", ".");
+    } else {
+      normalized = cleaned.replace(/,/g, "");
+    }
+  } else if (commaCount > 0) {
+    if (commaCount > 1 || /,\d{3}$/.test(cleaned)) {
+      normalized = cleaned.replace(/,/g, "");
+    } else {
+      normalized = cleaned.replace(",", ".");
+    }
+  } else if (dotCount > 0) {
+    if (dotCount > 1 || /\.\d{3}$/.test(cleaned)) {
+      normalized = cleaned.replace(/\./g, "");
+    }
+  }
+
   const n = Number(normalized);
   return Number.isFinite(n) ? n : null;
 }
@@ -1815,14 +2124,16 @@ function firstFiniteNumber(values) {
 }
 
 function decodeHtml(input) {
-  return input
+  return String(input || "")
     .replace(/&nbsp;/gi, " ")
     .replace(/&amp;/gi, "&")
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'")
     .replace(/&apos;/gi, "'")
     .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">");
+    .replace(/&gt;/gi, ">")
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#([0-9]+);/g, (_, dec) => String.fromCodePoint(Number.parseInt(dec, 10)));
 }
 
 function decodeUnicodeEscapes(input) {
@@ -1851,6 +2162,17 @@ function toTurkishSlug(text) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+/, "")
     .replace(/-+$/, "");
+}
+
+function toPisosSlug(text) {
+  return normalizeAreaName(text)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+/, "")
+    .replace(/_+$/, "");
 }
 
 function normalizeForMatch(text) {
@@ -1972,7 +2294,7 @@ function formatRunTag(d) {
 function printHumanSummary(summary) {
   console.log("Crawl Summary");
   console.log("=============");
-  console.log(`Area: ${summary.area.city}/${summary.area.district}`);
+  console.log(`Area: ${summary.area.country || DEFAULT_COUNTRY} ${summary.area.city}/${summary.area.district}`);
   console.log(`Started: ${summary.startedAt}`);
   console.log(`Finished: ${summary.finishedAt}`);
   console.log("");

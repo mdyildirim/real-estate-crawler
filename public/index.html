@@ -71,6 +71,10 @@
         .grid.two {
           grid-template-columns: 1fr 1fr;
         }
+
+        .grid.three {
+          grid-template-columns: repeat(3, 1fr);
+        }
       }
 
       label {
@@ -363,7 +367,11 @@
       </section>
 
       <section class="card grid">
-        <div class="grid two">
+        <div class="grid three">
+          <div>
+            <label for="country">Ülke seç</label>
+            <select id="country"></select>
+          </div>
           <div>
             <label for="city">İl seç</label>
             <select id="city"></select>
@@ -415,6 +423,7 @@
     </main>
 
     <script>
+      const countryEl = document.getElementById("country");
       const cityEl = document.getElementById("city");
       const districtEl = document.getElementById("district");
       const startBtn = document.getElementById("startBtn");
@@ -427,6 +436,19 @@
       const perfSubEl = document.getElementById("perfSub");
       const dealListEl = document.getElementById("dealList");
       const logListEl = document.getElementById("logList");
+
+      const COUNTRY_CONFIG = {
+        TR: {
+          label: "Türkiye",
+          locationsPath: "/tr-locations.json",
+          defaults: { city: "Istanbul", district: "Atasehir" }
+        },
+        ES: {
+          label: "España",
+          locationsPath: "/es-locations.json",
+          defaults: { city: "Madrid", district: "Madrid Capital" }
+        }
+      };
 
       let locationData = [];
       let autoTimer = null;
@@ -441,13 +463,11 @@
       function normalizeForMatch(text) {
         return String(text || "")
           .trim()
-          .toLocaleLowerCase("tr-TR")
-          .replace(/ç/g, "c")
-          .replace(/ğ/g, "g")
+          .replace(/İ/g, "I")
           .replace(/ı/g, "i")
-          .replace(/ö/g, "o")
-          .replace(/ş/g, "s")
-          .replace(/ü/g, "u");
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLowerCase();
       }
 
       function pickByNormalized(values, target) {
@@ -463,13 +483,11 @@
           return String(fallback || "");
         }
         const ascii = raw
-          .toLocaleLowerCase("tr-TR")
-          .replace(/ç/g, "c")
-          .replace(/ğ/g, "g")
+          .replace(/İ/g, "I")
           .replace(/ı/g, "i")
-          .replace(/ö/g, "o")
-          .replace(/ş/g, "s")
-          .replace(/ü/g, "u")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLowerCase()
           .replace(/[^a-z0-9 ]+/g, " ")
           .replace(/\s+/g, " ")
           .trim();
@@ -482,12 +500,20 @@
           .join(" ");
       }
 
+      function currentLocale() {
+        return countryEl.value === "ES" ? "es-ES" : "tr-TR";
+      }
+
+      function currentCurrency() {
+        return countryEl.value === "ES" ? "EUR" : "TRY";
+      }
+
       function fmtInt(value) {
         const n = Number(value);
         if (!Number.isFinite(n)) {
           return "-";
         }
-        return new Intl.NumberFormat("tr-TR").format(n);
+        return new Intl.NumberFormat(currentLocale()).format(n);
       }
 
       function fmtMoney(value) {
@@ -495,9 +521,9 @@
         if (!Number.isFinite(n)) {
           return "-";
         }
-        return new Intl.NumberFormat("tr-TR", {
+        return new Intl.NumberFormat(currentLocale(), {
           style: "currency",
-          currency: "TRY",
+          currency: currentCurrency(),
           maximumFractionDigits: 0
         }).format(n);
       }
@@ -554,14 +580,125 @@
         if (Number.isNaN(d.getTime())) {
           return value;
         }
-        return d.toLocaleString("tr-TR", { hour12: false });
+        return d.toLocaleString(currentLocale(), { hour12: false });
       }
 
       function selectedArea() {
+        const country = countryEl.value || "TR";
+        const defaults = COUNTRY_CONFIG[country]?.defaults || COUNTRY_CONFIG.TR.defaults;
+        const cityOption = cityEl.options[cityEl.selectedIndex];
+        const districtOption = districtEl.options[districtEl.selectedIndex];
         return {
-          city: canonicalAreaName(cityEl.value, "Istanbul"),
-          district: canonicalAreaName(districtEl.value, "Atasehir")
+          country,
+          city: canonicalAreaName(cityEl.value, defaults.city),
+          district: canonicalAreaName(districtEl.value, defaults.district),
+          citySlug: cityOption?.dataset?.slug || "",
+          districtSlug: districtOption?.dataset?.slug || ""
         };
+      }
+
+      function normalizeLocationData(items) {
+        return (Array.isArray(items) ? items : [])
+          .map((item) => {
+            const city = String(item?.city || item?.name || "")
+              .replace(/\s+/g, " ")
+              .trim();
+            if (!city) {
+              return null;
+            }
+            const citySlug = String(item?.citySlug || item?.city_slug || "")
+              .replace(/\s+/g, " ")
+              .trim();
+            const districts = (Array.isArray(item?.districts) ? item.districts : [])
+              .map((district) => {
+                if (typeof district === "string") {
+                  const name = district.replace(/\s+/g, " ").trim();
+                  return name ? { name, slug: "" } : null;
+                }
+                const name = String(district?.name || district?.district || "")
+                  .replace(/\s+/g, " ")
+                  .trim();
+                const slug = String(district?.slug || district?.districtSlug || district?.district_slug || "")
+                  .replace(/\s+/g, " ")
+                  .trim();
+                return name ? { name, slug } : null;
+              })
+              .filter(Boolean);
+            return { city, citySlug, districts };
+          })
+          .filter(Boolean);
+      }
+
+      function populateCountrySelect() {
+        countryEl.innerHTML = "";
+        for (const [code, cfg] of Object.entries(COUNTRY_CONFIG)) {
+          const opt = document.createElement("option");
+          opt.value = code;
+          opt.textContent = cfg.label;
+          countryEl.appendChild(opt);
+        }
+      }
+
+      function fillDistricts(cityName, preferredDistrictName = "", preferredDistrictSlug = "") {
+        const row = locationData.find((x) => x.city === cityName) || locationData[0] || null;
+        const districts = row ? row.districts : [];
+
+        districtEl.innerHTML = "";
+        for (const district of districts) {
+          const opt = document.createElement("option");
+          opt.value = district.name;
+          opt.textContent = district.name;
+          opt.dataset.slug = district.slug || "";
+          districtEl.appendChild(opt);
+        }
+
+        const bySlug = preferredDistrictSlug
+          ? districts.find((d) => normalizeForMatch(d.slug) === normalizeForMatch(preferredDistrictSlug))
+          : null;
+        const byName = preferredDistrictName
+          ? pickByNormalized(
+              districts.map((d) => d.name),
+              preferredDistrictName
+            )
+          : null;
+        const targetName = bySlug?.name || byName || districts[0]?.name || "";
+        if (targetName) {
+          districtEl.value = targetName;
+        }
+      }
+
+      async function loadLocations() {
+        const country = countryEl.value || "TR";
+        const cfg = COUNTRY_CONFIG[country] || COUNTRY_CONFIG.TR;
+        const res = await fetch(cfg.locationsPath);
+        const parsed = await readApiResponse(res);
+        const body = parsed.body;
+        if (!res.ok || !body || typeof body !== "object") {
+          throw new Error(parsed.text.slice(0, 180) || `HTTP ${res.status}`);
+        }
+        locationData = normalizeLocationData(body.items || []);
+
+        cityEl.innerHTML = "";
+        for (const item of locationData) {
+          const opt = document.createElement("option");
+          opt.value = item.city;
+          opt.textContent = item.city;
+          opt.dataset.slug = item.citySlug || "";
+          cityEl.appendChild(opt);
+        }
+
+        const bodyDefaults = body.defaults || {};
+        const defaultCityName = bodyDefaults.city || cfg.defaults.city || "";
+        const defaultDistrictName = bodyDefaults.district || cfg.defaults.district || "";
+        const defaultDistrictSlug = bodyDefaults.districtSlug || bodyDefaults.district_slug || "";
+
+        const defaultCity = pickByNormalized(
+          locationData.map((x) => x.city),
+          defaultCityName
+        ) || locationData[0]?.city;
+
+        cityEl.value = defaultCity || "";
+        fillDistricts(cityEl.value, defaultDistrictName, defaultDistrictSlug);
       }
 
       function renderPerfBadgeLoading() {
@@ -624,8 +761,8 @@
       }
 
       async function fetchBacktestSummary(force = false) {
-        const { city, district } = selectedArea();
-        const cacheKey = `${city}|${district}`;
+        const { country, city, district } = selectedArea();
+        const cacheKey = `${country}|${city}|${district}`;
         const now = Date.now();
 
         if (
@@ -641,6 +778,7 @@
         renderPerfBadgeLoading();
 
         const params = new URLSearchParams({
+          country,
           city,
           district,
           folds: "5",
@@ -650,9 +788,10 @@
         });
 
         const res = await fetch(`/api/backtest?${params.toString()}`);
-        const body = await res.json();
+        const parsed = await readApiResponse(res);
+        const body = parsed.body;
         if (!res.ok || !body?.report) {
-          throw new Error(body?.error || `HTTP ${res.status}`);
+          throw new Error(body?.error || parsed.text.slice(0, 180) || `HTTP ${res.status}`);
         }
 
         backtestCache = {
@@ -682,8 +821,24 @@
         return `Geri bildirim: Olumlu ${fmtInt(good)} | Olumsuz ${fmtInt(bad)}`;
       }
 
+      async function readApiResponse(res) {
+        const text = await res.text();
+        let body = null;
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = null;
+        }
+        return { body, text };
+      }
+
+      function looksLikeHtmlResponse(text) {
+        const raw = String(text || "").trim().toLowerCase();
+        return raw.startsWith("<!doctype html") || raw.startsWith("<html") || raw.includes("error code: 502");
+      }
+
       async function submitFeedback(payload, statusEl, buttons) {
-        const { city, district } = selectedArea();
+        const { country, city, district } = selectedArea();
         for (const btn of buttons) {
           btn.disabled = true;
         }
@@ -693,6 +848,7 @@
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
+              country,
               city,
               district,
               source: payload.source,
@@ -701,9 +857,10 @@
               feedback: payload.feedback
             })
           });
-          const body = await res.json();
+          const parsed = await readApiResponse(res);
+          const body = parsed.body;
           if (!res.ok || !body?.ok) {
-            throw new Error(body?.error || `HTTP ${res.status}`);
+            throw new Error(body?.error || parsed.text.slice(0, 180) || `HTTP ${res.status}`);
           }
           statusEl.textContent = `${feedbackStatusText(body.feedback)} (son oy: ${
             payload.feedback === "good" ? "Gerçek fırsat" : "Zayıf fırsat"
@@ -717,56 +874,14 @@
         }
       }
 
-      function fillDistricts(cityName) {
-        const row = locationData.find((x) => x.city === cityName);
-        const districts = row ? row.districts : [];
-
-        districtEl.innerHTML = "";
-        for (const district of districts) {
-          const opt = document.createElement("option");
-          opt.value = district;
-          opt.textContent = district;
-          districtEl.appendChild(opt);
-        }
-      }
-
-      async function loadLocations() {
-        const res = await fetch("/tr-locations.json");
-        const body = await res.json();
-        locationData = body.items || [];
-
-        cityEl.innerHTML = "";
-        for (const item of locationData) {
-          const opt = document.createElement("option");
-          opt.value = item.city;
-          opt.textContent = item.city;
-          cityEl.appendChild(opt);
-        }
-
-        const defaultCity = pickByNormalized(
-          locationData.map((x) => x.city),
-          "Istanbul"
-        ) || locationData[0]?.city;
-
-        cityEl.value = defaultCity || "";
-        fillDistricts(cityEl.value);
-
-        const defaultDistrict = pickByNormalized(
-          [...districtEl.options].map((x) => x.value),
-          "Atasehir"
-        );
-        if (defaultDistrict) {
-          districtEl.value = defaultDistrict;
-        }
-      }
-
       async function fetchRunInfo() {
-        const { city, district } = selectedArea();
-        const params = new URLSearchParams({ city, district, limit: "1" });
+        const { country, city, district } = selectedArea();
+        const params = new URLSearchParams({ country, city, district, limit: "1" });
         const res = await fetch(`/api/runs?${params.toString()}`);
-        const body = await res.json();
+        const parsed = await readApiResponse(res);
+        const body = parsed.body;
         if (!res.ok) {
-          throw new Error(body.error || `HTTP ${res.status}`);
+          throw new Error(body?.error || parsed.text.slice(0, 180) || `HTTP ${res.status}`);
         }
 
         const run = (body.runs || [])[0];
@@ -774,9 +889,10 @@
       }
 
       async function fetchDeals() {
-        const { city, district } = selectedArea();
+        const { country, city, district } = selectedArea();
 
         const params = new URLSearchParams({
+          country,
           city,
           district,
           limit: "10",
@@ -786,9 +902,10 @@
         });
 
         const res = await fetch(`/api/deals?${params.toString()}`);
-        const body = await res.json();
+        const parsed = await readApiResponse(res);
+        const body = parsed.body;
         if (!res.ok) {
-          throw new Error(body.error || `HTTP ${res.status}`);
+          throw new Error(body?.error || parsed.text.slice(0, 180) || `HTTP ${res.status}`);
         }
 
         const totals = body.totals || {};
@@ -957,13 +1074,14 @@
       }
 
       async function fetchLogs() {
-        const { city, district } = selectedArea();
-        const params = new URLSearchParams({ city, district, limit: "12" });
+        const { country, city, district } = selectedArea();
+        const params = new URLSearchParams({ country, city, district, limit: "12" });
         try {
           const res = await fetch(`/api/logs?${params.toString()}`);
-          const body = await res.json();
+          const parsed = await readApiResponse(res);
+          const body = parsed.body;
           if (!res.ok) {
-            throw new Error(body.error || `HTTP ${res.status}`);
+            throw new Error(body?.error || parsed.text.slice(0, 180) || `HTTP ${res.status}`);
           }
           const logs = body.logs || [];
           logListEl.innerHTML = "";
@@ -1010,21 +1128,41 @@
       }
 
       async function startScan() {
-        const { city, district } = selectedArea();
+        const { country, city, district, citySlug, districtSlug } = selectedArea();
+        const payload = {
+          country,
+          city,
+          district,
+          city_slug: citySlug,
+          district_slug: districtSlug,
+          sources: "all"
+        };
 
         startBtn.disabled = true;
         try {
-          setStatus(`Tarama başlatılıyor...\nBölge: ${city} / ${district}`);
+          setStatus(`Tarama başlatılıyor...\nBölge: ${country} / ${city} / ${district}`);
 
-          const res = await fetch("/api/crawl-request", {
+          let res = await fetch("/api/crawl-request", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ city, district, sources: "all" })
+            body: JSON.stringify(payload)
           });
 
-          const body = await res.json();
-          if (!res.ok) {
-            throw new Error(body.error || `HTTP ${res.status}`);
+          let parsed = await readApiResponse(res);
+          let body = parsed.body;
+          const shouldFallbackToGet =
+            (!res.ok || !body?.ok) && (!body || looksLikeHtmlResponse(parsed.text));
+          if (shouldFallbackToGet) {
+            const query = new URLSearchParams({
+              dispatch: "1",
+              ...payload
+            });
+            res = await fetch(`/api/crawl-request?${query.toString()}`);
+            parsed = await readApiResponse(res);
+            body = parsed.body;
+          }
+          if (!res.ok || !body?.ok) {
+            throw new Error(body?.error || parsed.text.slice(0, 240) || `HTTP ${res.status}`);
           }
 
           setStatus("Tarama başladı.\nLütfen 2-4 dakika bekleyin.\nSonuçlar bu sayfaya otomatik düşecek.");
@@ -1043,6 +1181,12 @@
         );
       });
 
+      countryEl.addEventListener("change", () => {
+        loadLocations()
+          .then(() => refreshSnapshot({ includeBacktest: true, forceBacktest: true }))
+          .catch((error) => setStatus(`Veri alınamadı: ${String(error.message || error)}`, true));
+      });
+
       districtEl.addEventListener("change", () => {
         refreshSnapshot({ includeBacktest: true, forceBacktest: true }).catch((error) =>
           setStatus(`Veri alınamadı: ${String(error.message || error)}`, true)
@@ -1055,6 +1199,8 @@
 
       (async function bootstrap() {
         try {
+          populateCountrySelect();
+          countryEl.value = "TR";
           await loadLocations();
           await refreshSnapshot({ includeBacktest: true, forceBacktest: true });
           startAutoRefresh();

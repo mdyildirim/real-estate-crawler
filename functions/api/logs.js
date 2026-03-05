@@ -16,6 +16,21 @@ function toInt(value, fallback) {
   return Math.floor(n);
 }
 
+const AREA_DEFAULTS = {
+  TR: true,
+  ES: true
+};
+
+function canonicalCountryCode(value, fallback = "") {
+  const raw = String(value || fallback || "")
+    .trim()
+    .toUpperCase();
+  if (!raw) {
+    return "";
+  }
+  return Object.prototype.hasOwnProperty.call(AREA_DEFAULTS, raw) ? raw : fallback;
+}
+
 function canonicalAreaName(value, fallback = "") {
   const raw = String(value || fallback || "")
     .replace(/\s+/g, " ")
@@ -24,13 +39,11 @@ function canonicalAreaName(value, fallback = "") {
     return String(fallback || "");
   }
   const ascii = raw
-    .toLocaleLowerCase("tr-TR")
-    .replace(/ç/g, "c")
-    .replace(/ğ/g, "g")
+    .replace(/İ/g, "I")
     .replace(/ı/g, "i")
-    .replace(/ö/g, "o")
-    .replace(/ş/g, "s")
-    .replace(/ü/g, "u")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
     .replace(/[^a-z0-9 ]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -66,8 +79,10 @@ export async function onRequestGet(context) {
   const eventType = (url.searchParams.get("event") || "").trim();
   const runTag = (url.searchParams.get("run_tag") || "").trim();
 
+  const areaCountryRaw = (url.searchParams.get("country") || "").trim();
   const areaCityRaw = (url.searchParams.get("city") || "").trim();
   const areaDistrictRaw = (url.searchParams.get("district") || "").trim();
+  const areaCountry = areaCountryRaw ? canonicalCountryCode(areaCountryRaw) : "";
   const areaCity = areaCityRaw ? canonicalAreaName(areaCityRaw) : "";
   const areaDistrict = areaDistrictRaw ? canonicalAreaName(areaDistrictRaw) : "";
 
@@ -86,6 +101,10 @@ export async function onRequestGet(context) {
     where.push("run_tag = ?");
     binds.push(runTag);
   }
+  if (areaCountry) {
+    where.push("area_country = ?");
+    binds.push(areaCountry);
+  }
   if (areaCity) {
     where.push("area_city = ?");
     binds.push(areaCity);
@@ -103,6 +122,7 @@ export async function onRequestGet(context) {
       event_type AS eventType,
       run_tag AS runTag,
       run_id AS runId,
+      area_country AS areaCountry,
       area_city AS areaCity,
       area_district AS areaDistrict,
       source,
@@ -125,6 +145,7 @@ export async function onRequestGet(context) {
       level: level || null,
       eventType: eventType || null,
       runTag: runTag || null,
+      areaCountry: areaCountry || null,
       areaCity: areaCity || null,
       areaDistrict: areaDistrict || null
     },

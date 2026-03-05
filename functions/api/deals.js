@@ -48,6 +48,22 @@ function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n));
 }
 
+const AREA_DEFAULTS = {
+  TR: { city: "Istanbul", district: "Atasehir" },
+  ES: { city: "Madrid", district: "Madrid Capital" }
+};
+
+function canonicalCountryCode(value, fallback = "TR") {
+  const raw = String(value || fallback || "TR")
+    .trim()
+    .toUpperCase();
+  return Object.prototype.hasOwnProperty.call(AREA_DEFAULTS, raw) ? raw : fallback;
+}
+
+function areaDefaultsForCountry(country) {
+  return AREA_DEFAULTS[canonicalCountryCode(country)] || AREA_DEFAULTS.TR;
+}
+
 function bucketLabel(bucket) {
   if (bucket === "neighborhood+room") {
     return "Mahalle + oda sayısı";
@@ -72,13 +88,11 @@ function canonicalAreaName(value, fallback) {
     return String(fallback || "");
   }
   const ascii = raw
-    .toLocaleLowerCase("tr-TR")
-    .replace(/ç/g, "c")
-    .replace(/ğ/g, "g")
+    .replace(/İ/g, "I")
     .replace(/ı/g, "i")
-    .replace(/ö/g, "o")
-    .replace(/ş/g, "s")
-    .replace(/ü/g, "u")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
     .replace(/[^a-z0-9 ]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -94,13 +108,11 @@ function canonicalAreaName(value, fallback) {
 function normalizeForMatch(text) {
   return String(text || "")
     .trim()
-    .toLocaleLowerCase("tr-TR")
-    .replace(/ç/g, "c")
-    .replace(/ğ/g, "g")
+    .replace(/İ/g, "I")
     .replace(/ı/g, "i")
-    .replace(/ö/g, "o")
-    .replace(/ş/g, "s")
-    .replace(/ü/g, "u")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
     .replace(/\s+/g, " ");
 }
 
@@ -108,6 +120,11 @@ function parseRoomStats(roomText) {
   const normalized = normalizeForMatch(roomText || "");
   if (!normalized) {
     return { bedrooms: null, livingRooms: null, total: null };
+  }
+  const spanish = normalized.match(/([0-9]+(?:[.,][0-9]+)?)\s*(?:hab|habitaciones?|dormitorios?)/);
+  if (spanish) {
+    const total = Number(spanish[1].replace(",", "."));
+    return { bedrooms: null, livingRooms: null, total: Number.isFinite(total) ? total : null };
   }
   const plus = normalized.match(/([0-9]+(?:[.,][0-9]+)?)\s*\+\s*([0-9]+(?:[.,][0-9]+)?)/);
   if (plus) {
@@ -135,6 +152,8 @@ function parseBuildingAgeYears(ageText) {
   if (
     normalized.includes("sifir") ||
     normalized.includes("yeni bina") ||
+    normalized.includes("obra nueva") ||
+    normalized.includes("a estrenar") ||
     normalized === "0" ||
     normalized === "0 yas"
   ) {
@@ -151,6 +170,13 @@ function parseBuildingAgeYears(ageText) {
   const plus = normalized.match(/([0-9]{1,2})\s*(ve\s*uzeri|uzeri|ustu|ustunde)/);
   if (plus) {
     const start = Number(plus[1]);
+    if (Number.isFinite(start)) {
+      return start + 5;
+    }
+  }
+  const plusEs = normalized.match(/([0-9]{1,2})\s*(anos|anos o mas|o mas|o más)/);
+  if (plusEs) {
+    const start = Number(plusEs[1]);
     if (Number.isFinite(start)) {
       return start + 5;
     }
@@ -174,13 +200,27 @@ function parseFloorCategory(floorText) {
   if (normalized.includes("zemin") || normalized.includes("giris") || normalized.includes("bahce")) {
     return "ground";
   }
+  if (normalized.includes("planta baja") || normalized.includes("bajo") || normalized.includes("entresuelo")) {
+    return "ground";
+  }
   if (normalized.includes("cati") || normalized.includes("teras") || normalized.includes("en ust") || normalized.includes("son kat")) {
+    return "top";
+  }
+  if (normalized.includes("atico") || normalized.includes("ultima planta")) {
     return "top";
   }
   if (normalized.includes("ara kat")) {
     return "middle";
   }
   const numericFloor = normalized.match(/([0-9]{1,2})\s*\.?\s*kat|([0-9]{1,2})kat/);
+  const numericFloorEs = normalized.match(/([0-9]{1,2})\s*(?:planta|piso)/);
+  const levelEs = Number(numericFloorEs ? numericFloorEs[1] : NaN);
+  if (Number.isFinite(levelEs)) {
+    if (levelEs <= 0) {
+      return "ground";
+    }
+    return "middle";
+  }
   if (numericFloor) {
     const level = Number(numericFloor[1] || numericFloor[2]);
     if (Number.isFinite(level) && level <= 0) {
@@ -254,13 +294,32 @@ function parseAssetClass(titleText) {
   if (normalized.includes("villa")) {
     return "villa";
   }
+  if (normalized.includes("chalet")) {
+    return "villa";
+  }
   if (normalized.includes("mustakil")) {
+    return "mustakil";
+  }
+  if (normalized.includes("casa")) {
     return "mustakil";
   }
   if (normalized.includes("daire") || normalized.includes("apartman")) {
     return "daire";
   }
+  if (
+    normalized.includes("piso") ||
+    normalized.includes("apartamento") ||
+    normalized.includes("apartament") ||
+    normalized.includes("estudio") ||
+    normalized.includes("atico") ||
+    normalized.includes("duplex")
+  ) {
+    return "daire";
+  }
   if (normalized.includes("ofis") || normalized.includes("isyeri")) {
+    return "ofis";
+  }
+  if (normalized.includes("oficina") || normalized.includes("local")) {
     return "ofis";
   }
   return "unknown";
@@ -775,7 +834,7 @@ function computeHistoryStats(entries) {
   };
 }
 
-async function loadHistoryStatsMap(DB, areaCity, areaDistrict, lookbackDays) {
+async function loadHistoryStatsMap(DB, areaCountry, areaCity, areaDistrict, lookbackDays) {
   const map = new Map();
   const days = Math.max(30, Math.min(365, toInt(lookbackDays, 120)));
   const rawWindow = `-${days} days`;
@@ -793,9 +852,11 @@ async function loadHistoryStatsMap(DB, areaCity, areaDistrict, lookbackDays) {
          AND lc.listing_key = s.listing_key
         JOIN crawl_runs r
           ON r.id = s.run_id
-        WHERE lc.area_city = ?
+        WHERE lc.area_country = ?
+          AND lc.area_city = ?
           AND lc.area_district = ?
           AND lc.is_active = 1
+          AND r.area_country = ?
           AND r.area_city = ?
           AND r.area_district = ?
           AND s.price_tl IS NOT NULL
@@ -804,7 +865,7 @@ async function loadHistoryStatsMap(DB, areaCity, areaDistrict, lookbackDays) {
         ORDER BY s.source ASC, s.listing_key ASC, datetime(s.crawled_at) ASC
       `
     )
-      .bind(areaCity, areaDistrict, areaCity, areaDistrict, rawWindow)
+      .bind(areaCountry, areaCity, areaDistrict, areaCountry, areaCity, areaDistrict, rawWindow)
       .all();
 
     const grouped = new Map();
@@ -841,7 +902,7 @@ async function loadHistoryStatsMap(DB, areaCity, areaDistrict, lookbackDays) {
   }
 }
 
-async function loadFeedbackSummaryMap(DB, areaCity, areaDistrict) {
+async function loadFeedbackSummaryMap(DB, areaCountry, areaCity, areaDistrict) {
   const map = new Map();
   try {
     const rowsRes = await DB.prepare(
@@ -852,12 +913,13 @@ async function loadFeedbackSummaryMap(DB, areaCity, areaDistrict) {
           SUM(CASE WHEN feedback = 'good' THEN 1 ELSE 0 END) AS goodCount,
           SUM(CASE WHEN feedback = 'bad' THEN 1 ELSE 0 END) AS badCount
         FROM deal_feedback
-        WHERE area_city = ?
+        WHERE area_country = ?
+          AND area_city = ?
           AND area_district = ?
         GROUP BY source, listing_key
       `
     )
-      .bind(areaCity, areaDistrict)
+      .bind(areaCountry, areaCity, areaDistrict)
       .all();
 
     let totalVotes = 0;
@@ -1941,8 +2003,10 @@ export async function onRequestGet(context) {
   }
 
   const url = new URL(context.request.url);
-  const areaCity = canonicalAreaName(url.searchParams.get("city"), "Istanbul");
-  const areaDistrict = canonicalAreaName(url.searchParams.get("district"), "Atasehir");
+  const areaCountry = canonicalCountryCode(url.searchParams.get("country"), "TR");
+  const defaults = areaDefaultsForCountry(areaCountry);
+  const areaCity = canonicalAreaName(url.searchParams.get("city"), defaults.city);
+  const areaDistrict = canonicalAreaName(url.searchParams.get("district"), defaults.district);
   const limit = Math.max(1, Math.min(100, toInt(url.searchParams.get("limit"), 25)));
   const minDiscount = clamp(toFloat(url.searchParams.get("min_discount"), 0.12), -0.5, 0.9);
   const minConfidence = clamp(toFloat(url.searchParams.get("min_confidence"), 0.35), 0, 1);
@@ -1979,12 +2043,13 @@ export async function onRequestGet(context) {
         first_seen_at AS firstSeenAt,
         last_seen_at AS lastSeenAt
       FROM listings_current
-      WHERE area_city = ?
+      WHERE area_country = ?
+        AND area_city = ?
         AND area_district = ?
         AND is_active = 1
     `
   )
-    .bind(areaCity, areaDistrict)
+    .bind(areaCountry, areaCity, areaDistrict)
     .all();
 
   const rows = (rowsRes.results || []).map((r) => ({
@@ -2001,8 +2066,8 @@ export async function onRequestGet(context) {
   const universe = buildScoringUniverse(valid);
   const scoringRows = universe.rows;
   const model = useModel ? trainRidgeModel(scoringRows, { lambda: modelLambda }) : null;
-  const historyInfo = await loadHistoryStatsMap(DB, areaCity, areaDistrict, historyLookbackDays);
-  const feedbackInfo = await loadFeedbackSummaryMap(DB, areaCity, areaDistrict);
+  const historyInfo = await loadHistoryStatsMap(DB, areaCountry, areaCity, areaDistrict, historyLookbackDays);
+  const feedbackInfo = await loadFeedbackSummaryMap(DB, areaCountry, areaCity, areaDistrict);
 
   const scored = [];
   for (const listing of scoringRows) {
@@ -2030,7 +2095,7 @@ export async function onRequestGet(context) {
 
   return json({
     ok: true,
-    area: { city: areaCity, district: areaDistrict },
+    area: { country: areaCountry, city: areaCity, district: areaDistrict },
     model: {
       version: "v4-hybrid-ml",
       factors: [
@@ -2086,6 +2151,7 @@ export async function onRequestGet(context) {
 
 export {
   withPrecomputed,
+  canonicalCountryCode,
   canonicalAreaName,
   toInt,
   toBool

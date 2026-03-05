@@ -1,6 +1,7 @@
 import {
   withPrecomputed,
   buildBacktestReport,
+  canonicalCountryCode,
   canonicalAreaName,
   toInt,
   toBool
@@ -24,6 +25,11 @@ function toFloat(value, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+const AREA_DEFAULTS = {
+  TR: { city: "Istanbul", district: "Atasehir" },
+  ES: { city: "Madrid", district: "Madrid Capital" }
+};
+
 export async function onRequestGet(context) {
   const DB = context.env?.DB;
   if (!DB) {
@@ -31,8 +37,10 @@ export async function onRequestGet(context) {
   }
 
   const url = new URL(context.request.url);
-  const areaCity = canonicalAreaName(url.searchParams.get("city"), "Istanbul");
-  const areaDistrict = canonicalAreaName(url.searchParams.get("district"), "Atasehir");
+  const areaCountry = canonicalCountryCode(url.searchParams.get("country"), "TR");
+  const defaults = AREA_DEFAULTS[areaCountry] || AREA_DEFAULTS.TR;
+  const areaCity = canonicalAreaName(url.searchParams.get("city"), defaults.city);
+  const areaDistrict = canonicalAreaName(url.searchParams.get("district"), defaults.district);
   const folds = Math.max(3, Math.min(10, toInt(url.searchParams.get("folds"), 5)));
   const minComps = Math.max(3, Math.min(30, toInt(url.searchParams.get("min_comps"), 6)));
   const strictSameNeighborhood = toBool(url.searchParams.get("strict_same_neighborhood"), true);
@@ -64,12 +72,13 @@ export async function onRequestGet(context) {
         endeksa_max_price AS endeksaMaxPrice,
         last_seen_at AS lastSeenAt
       FROM listings_current
-      WHERE area_city = ?
+      WHERE area_country = ?
+        AND area_city = ?
         AND area_district = ?
         AND is_active = 1
     `
   )
-    .bind(areaCity, areaDistrict)
+    .bind(areaCountry, areaCity, areaDistrict)
     .all();
 
   const rows = (rowsRes.results || []).map((r) => ({
@@ -95,7 +104,7 @@ export async function onRequestGet(context) {
 
   return json({
     ok: Boolean(report?.ok),
-    area: { city: areaCity, district: areaDistrict },
+    area: { country: areaCountry, city: areaCity, district: areaDistrict },
     params: {
       folds,
       minComps,

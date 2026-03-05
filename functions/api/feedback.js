@@ -8,6 +8,22 @@ function json(data, status = 200) {
   });
 }
 
+const AREA_DEFAULTS = {
+  TR: { city: "Istanbul", district: "Atasehir" },
+  ES: { city: "Madrid", district: "Madrid Capital" }
+};
+
+function canonicalCountryCode(value, fallback = "TR") {
+  const raw = String(value || fallback || "TR")
+    .trim()
+    .toUpperCase();
+  return Object.prototype.hasOwnProperty.call(AREA_DEFAULTS, raw) ? raw : fallback;
+}
+
+function areaDefaultsForCountry(country) {
+  return AREA_DEFAULTS[canonicalCountryCode(country)] || AREA_DEFAULTS.TR;
+}
+
 function canonicalAreaName(value, fallback) {
   const raw = String(value || fallback || "")
     .replace(/\s+/g, " ")
@@ -16,13 +32,11 @@ function canonicalAreaName(value, fallback) {
     return String(fallback || "");
   }
   const ascii = raw
-    .toLocaleLowerCase("tr-TR")
-    .replace(/ç/g, "c")
-    .replace(/ğ/g, "g")
+    .replace(/İ/g, "I")
     .replace(/ı/g, "i")
-    .replace(/ö/g, "o")
-    .replace(/ş/g, "s")
-    .replace(/ü/g, "u")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
     .replace(/[^a-z0-9 ]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -61,20 +75,21 @@ function toInt(value, fallback) {
   return Number.isFinite(n) ? Math.floor(n) : fallback;
 }
 
-async function feedbackCounts(DB, areaCity, areaDistrict, source, listingKey) {
+async function feedbackCounts(DB, areaCountry, areaCity, areaDistrict, source, listingKey) {
   const row = await DB.prepare(
     `
       SELECT
         SUM(CASE WHEN feedback = 'good' THEN 1 ELSE 0 END) AS goodCount,
         SUM(CASE WHEN feedback = 'bad' THEN 1 ELSE 0 END) AS badCount
       FROM deal_feedback
-      WHERE area_city = ?
+      WHERE area_country = ?
+        AND area_city = ?
         AND area_district = ?
         AND source = ?
         AND listing_key = ?
     `
   )
-    .bind(areaCity, areaDistrict, source, listingKey)
+    .bind(areaCountry, areaCity, areaDistrict, source, listingKey)
     .first();
 
   const goodCount = Number(row?.goodCount || 0);
@@ -98,8 +113,10 @@ export async function onRequestPost(context) {
     return json({ ok: false, error: "Invalid JSON body." }, 400);
   }
 
-  const areaCity = canonicalAreaName(body.city, "Istanbul");
-  const areaDistrict = canonicalAreaName(body.district, "Atasehir");
+  const areaCountry = canonicalCountryCode(body.country, "TR");
+  const defaults = areaDefaultsForCountry(areaCountry);
+  const areaCity = canonicalAreaName(body.city, defaults.city);
+  const areaDistrict = canonicalAreaName(body.district, defaults.district);
   const source = String(body.source || "").trim();
   const listingKey = String(body.listingKey || "").trim();
   const listingId = body.listingId == null ? null : String(body.listingId);
@@ -121,11 +138,11 @@ export async function onRequestPost(context) {
     await DB.prepare(
       `
         INSERT INTO deal_feedback (
-          area_city, area_district, source, listing_key, listing_id, feedback, note
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          area_country, area_city, area_district, source, listing_key, listing_id, feedback, note
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `
     )
-      .bind(areaCity, areaDistrict, source, listingKey, listingId, feedback, note)
+      .bind(areaCountry, areaCity, areaDistrict, source, listingKey, listingId, feedback, note)
       .run();
   } catch (error) {
     return json(
@@ -138,10 +155,10 @@ export async function onRequestPost(context) {
     );
   }
 
-  const counts = await feedbackCounts(DB, areaCity, areaDistrict, source, listingKey);
+  const counts = await feedbackCounts(DB, areaCountry, areaCity, areaDistrict, source, listingKey);
   return json({
     ok: true,
-    area: { city: areaCity, district: areaDistrict },
+    area: { country: areaCountry, city: areaCity, district: areaDistrict },
     listing: { source, listingKey, listingId },
     recorded: feedback,
     feedback: counts
@@ -155,17 +172,19 @@ export async function onRequestGet(context) {
   }
 
   const url = new URL(context.request.url);
-  const areaCity = canonicalAreaName(url.searchParams.get("city"), "Istanbul");
-  const areaDistrict = canonicalAreaName(url.searchParams.get("district"), "Atasehir");
+  const areaCountry = canonicalCountryCode(url.searchParams.get("country"), "TR");
+  const defaults = areaDefaultsForCountry(areaCountry);
+  const areaCity = canonicalAreaName(url.searchParams.get("city"), defaults.city);
+  const areaDistrict = canonicalAreaName(url.searchParams.get("district"), defaults.district);
   const source = String(url.searchParams.get("source") || "").trim();
   const listingKey = String(url.searchParams.get("listingKey") || "").trim();
   const limit = Math.max(1, Math.min(100, toInt(url.searchParams.get("limit"), 20)));
 
   if (source && listingKey) {
-    const counts = await feedbackCounts(DB, areaCity, areaDistrict, source, listingKey);
+    const counts = await feedbackCounts(DB, areaCountry, areaCity, areaDistrict, source, listingKey);
     return json({
       ok: true,
-      area: { city: areaCity, district: areaDistrict },
+      area: { country: areaCountry, city: areaCity, district: areaDistrict },
       listing: { source, listingKey },
       feedback: counts
     });
@@ -182,18 +201,19 @@ export async function onRequestGet(context) {
           feedback,
           note
         FROM deal_feedback
-        WHERE area_city = ?
+        WHERE area_country = ?
+          AND area_city = ?
           AND area_district = ?
         ORDER BY id DESC
         LIMIT ?
       `
     )
-      .bind(areaCity, areaDistrict, limit)
+      .bind(areaCountry, areaCity, areaDistrict, limit)
       .all();
 
     return json({
       ok: true,
-      area: { city: areaCity, district: areaDistrict },
+      area: { country: areaCountry, city: areaCity, district: areaDistrict },
       count: (rowsRes.results || []).length,
       rows: rowsRes.results || []
     });

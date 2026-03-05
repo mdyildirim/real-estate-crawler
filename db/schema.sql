@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS crawl_runs (
   run_tag TEXT NOT NULL UNIQUE,
   started_at TEXT NOT NULL,
   finished_at TEXT NOT NULL,
+  area_country TEXT NOT NULL DEFAULT 'TR',
   area_city TEXT NOT NULL,
   area_district TEXT NOT NULL,
   raw_count INTEGER NOT NULL,
@@ -29,6 +30,9 @@ CREATE TABLE IF NOT EXISTS source_runs (
   FOREIGN KEY (run_id) REFERENCES crawl_runs(id) ON DELETE CASCADE,
   UNIQUE(run_id, source)
 );
+
+CREATE INDEX IF NOT EXISTS idx_crawl_runs_country_area_started
+  ON crawl_runs(area_country, area_city, area_district, started_at DESC);
 
 CREATE TABLE IF NOT EXISTS listings_current (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,6 +56,7 @@ CREATE TABLE IF NOT EXISTS listings_current (
   avg_price_for_sale INTEGER,
   endeksa_min_price INTEGER,
   endeksa_max_price INTEGER,
+  area_country TEXT NOT NULL DEFAULT 'TR',
   area_city TEXT NOT NULL,
   area_district TEXT NOT NULL,
   first_seen_at TEXT NOT NULL,
@@ -65,6 +70,8 @@ CREATE TABLE IF NOT EXISTS listings_current (
 
 CREATE INDEX IF NOT EXISTS idx_listings_current_source ON listings_current(source);
 CREATE INDEX IF NOT EXISTS idx_listings_current_area_active ON listings_current(area_city, area_district, is_active);
+CREATE INDEX IF NOT EXISTS idx_listings_current_country_area_active
+  ON listings_current(area_country, area_city, area_district, is_active);
 CREATE INDEX IF NOT EXISTS idx_listings_current_last_seen ON listings_current(last_seen_at DESC);
 CREATE INDEX IF NOT EXISTS idx_listings_current_price_tl ON listings_current(price_tl);
 CREATE INDEX IF NOT EXISTS idx_listings_current_room_neighborhood ON listings_current(room_count, neighborhood);
@@ -107,6 +114,7 @@ CREATE TABLE IF NOT EXISTS system_logs (
   event_type TEXT NOT NULL,
   run_tag TEXT,
   run_id INTEGER,
+  area_country TEXT,
   area_city TEXT,
   area_district TEXT,
   source TEXT,
@@ -117,10 +125,13 @@ CREATE TABLE IF NOT EXISTS system_logs (
 CREATE INDEX IF NOT EXISTS idx_system_logs_created_at ON system_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_system_logs_event_type ON system_logs(event_type);
 CREATE INDEX IF NOT EXISTS idx_system_logs_area ON system_logs(area_city, area_district, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_system_logs_country_area
+  ON system_logs(area_country, area_city, area_district, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS deal_feedback (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  area_country TEXT NOT NULL DEFAULT 'TR',
   area_city TEXT NOT NULL,
   area_district TEXT NOT NULL,
   source TEXT NOT NULL,
@@ -132,5 +143,7 @@ CREATE TABLE IF NOT EXISTS deal_feedback (
 
 CREATE INDEX IF NOT EXISTS idx_deal_feedback_area_created
   ON deal_feedback(area_city, area_district, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_deal_feedback_country_area_created
+  ON deal_feedback(area_country, area_city, area_district, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_deal_feedback_listing
   ON deal_feedback(source, listing_key, created_at DESC);

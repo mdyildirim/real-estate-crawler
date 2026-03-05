@@ -20,6 +20,22 @@ function inClausePlaceholders(count) {
   return new Array(count).fill("?").join(", ");
 }
 
+const AREA_DEFAULTS = {
+  TR: { city: "Istanbul", district: "Atasehir" },
+  ES: { city: "Madrid", district: "Madrid Capital" }
+};
+
+function canonicalCountryCode(value, fallback = "TR") {
+  const raw = String(value || fallback || "TR")
+    .trim()
+    .toUpperCase();
+  return Object.prototype.hasOwnProperty.call(AREA_DEFAULTS, raw) ? raw : fallback;
+}
+
+function areaDefaultsForCountry(country) {
+  return AREA_DEFAULTS[canonicalCountryCode(country)] || AREA_DEFAULTS.TR;
+}
+
 function canonicalAreaName(value, fallback) {
   const raw = String(value || fallback || "")
     .replace(/\s+/g, " ")
@@ -28,13 +44,11 @@ function canonicalAreaName(value, fallback) {
     return String(fallback || "");
   }
   const ascii = raw
-    .toLocaleLowerCase("tr-TR")
-    .replace(/ç/g, "c")
-    .replace(/ğ/g, "g")
+    .replace(/İ/g, "I")
     .replace(/ı/g, "i")
-    .replace(/ö/g, "o")
-    .replace(/ş/g, "s")
-    .replace(/ü/g, "u")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
     .replace(/[^a-z0-9 ]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -55,8 +69,10 @@ export async function onRequestGet(context) {
 
   const url = new URL(context.request.url);
   const limit = Math.max(1, Math.min(100, toInt(url.searchParams.get("limit"), 20)));
-  const areaCity = canonicalAreaName(url.searchParams.get("city"), "Istanbul");
-  const areaDistrict = canonicalAreaName(url.searchParams.get("district"), "Atasehir");
+  const areaCountry = canonicalCountryCode(url.searchParams.get("country"), "TR");
+  const defaults = areaDefaultsForCountry(areaCountry);
+  const areaCity = canonicalAreaName(url.searchParams.get("city"), defaults.city);
+  const areaDistrict = canonicalAreaName(url.searchParams.get("district"), defaults.district);
 
   const runsRes = await DB.prepare(
     `
@@ -65,23 +81,24 @@ export async function onRequestGet(context) {
         run_tag AS runTag,
         started_at AS startedAt,
         finished_at AS finishedAt,
+        area_country AS areaCountry,
         area_city AS areaCity,
         area_district AS areaDistrict,
         raw_count AS rawCount,
         unique_count AS uniqueCount,
         created_at AS createdAt
       FROM crawl_runs
-      WHERE area_city = ? AND area_district = ?
+      WHERE area_country = ? AND area_city = ? AND area_district = ?
       ORDER BY id DESC
       LIMIT ?
     `
   )
-    .bind(areaCity, areaDistrict, limit)
+    .bind(areaCountry, areaCity, areaDistrict, limit)
     .all();
 
   const runs = runsRes.results || [];
   if (runs.length === 0) {
-    return json({ ok: true, area: { city: areaCity, district: areaDistrict }, runs: [] });
+    return json({ ok: true, area: { country: areaCountry, city: areaCity, district: areaDistrict }, runs: [] });
   }
 
   const runIds = runs.map((r) => r.id);
@@ -120,7 +137,7 @@ export async function onRequestGet(context) {
 
   return json({
     ok: true,
-    area: { city: areaCity, district: areaDistrict },
+    area: { country: areaCountry, city: areaCity, district: areaDistrict },
     runs: runs.map((r) => ({
       ...r,
       sourceSummaries: statsByRun.get(r.id) || []

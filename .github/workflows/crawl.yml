@@ -3,14 +3,26 @@ name: Crawl Real Estate
 on:
   workflow_dispatch:
     inputs:
+      country:
+        description: "Country code (TR or ES)"
+        required: false
+        default: "TR"
       city:
-        description: "City in Turkiye"
+        description: "City in selected country"
         required: false
         default: "Istanbul"
       district:
         description: "District in selected city"
         required: false
         default: "Atasehir"
+      city_slug:
+        description: "Optional city slug override for source URL"
+        required: false
+        default: ""
+      district_slug:
+        description: "Optional district slug override for source URL"
+        required: false
+        default: ""
       sources:
         description: "Comma-separated source keys or all"
         required: false
@@ -43,23 +55,37 @@ jobs:
         id: params
         shell: bash
         run: |
+          COUNTRY="${{ github.event.inputs.country }}"
           CITY="${{ github.event.inputs.city }}"
           DISTRICT="${{ github.event.inputs.district }}"
+          CITY_SLUG="${{ github.event.inputs.city_slug }}"
+          DISTRICT_SLUG="${{ github.event.inputs.district_slug }}"
           SOURCES="${{ github.event.inputs.sources }}"
 
-          if [ -z "$CITY" ]; then CITY="Istanbul"; fi
-          if [ -z "$DISTRICT" ]; then DISTRICT="Atasehir"; fi
+          if [ -z "$COUNTRY" ]; then COUNTRY="TR"; fi
+          if [ -z "$CITY" ]; then
+            if [ "$COUNTRY" = "ES" ]; then CITY="Madrid"; else CITY="Istanbul"; fi
+          fi
+          if [ -z "$DISTRICT" ]; then
+            if [ "$COUNTRY" = "ES" ]; then DISTRICT="Madrid Capital"; else DISTRICT="Atasehir"; fi
+          fi
           if [ -z "$SOURCES" ]; then SOURCES="all"; fi
 
+          echo "country=$COUNTRY" >> "$GITHUB_OUTPUT"
           echo "city=$CITY" >> "$GITHUB_OUTPUT"
           echo "district=$DISTRICT" >> "$GITHUB_OUTPUT"
+          echo "city_slug=$CITY_SLUG" >> "$GITHUB_OUTPUT"
+          echo "district_slug=$DISTRICT_SLUG" >> "$GITHUB_OUTPUT"
           echo "sources=$SOURCES" >> "$GITHUB_OUTPUT"
 
       - name: Run crawler
         run: |
           node src/crawl.js \
+            --country="${{ steps.params.outputs.country }}" \
             --city="${{ steps.params.outputs.city }}" \
             --district="${{ steps.params.outputs.district }}" \
+            --city-slug="${{ steps.params.outputs.city_slug }}" \
+            --district-slug="${{ steps.params.outputs.district_slug }}" \
             --sources="${{ steps.params.outputs.sources }}" \
             --sqlite-path=data/real-estate-ci.sqlite
 

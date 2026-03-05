@@ -25,6 +25,22 @@ function sanitizeInput(value, fallback, maxLen = 120) {
   return pick(value, fallback).slice(0, maxLen);
 }
 
+const AREA_DEFAULTS = {
+  TR: { city: "Istanbul", district: "Atasehir" },
+  ES: { city: "Madrid", district: "Madrid Capital" }
+};
+
+function canonicalCountryCode(value, fallback = "TR") {
+  const raw = String(value || fallback || "TR")
+    .trim()
+    .toUpperCase();
+  return Object.prototype.hasOwnProperty.call(AREA_DEFAULTS, raw) ? raw : fallback;
+}
+
+function areaDefaultsForCountry(country) {
+  return AREA_DEFAULTS[canonicalCountryCode(country)] || AREA_DEFAULTS.TR;
+}
+
 function canonicalAreaName(value, fallback) {
   const raw = String(value || fallback || "")
     .replace(/\s+/g, " ")
@@ -33,13 +49,11 @@ function canonicalAreaName(value, fallback) {
     return String(fallback || "");
   }
   const ascii = raw
-    .toLocaleLowerCase("tr-TR")
-    .replace(/ç/g, "c")
-    .replace(/ğ/g, "g")
+    .replace(/İ/g, "I")
     .replace(/ı/g, "i")
-    .replace(/ö/g, "o")
-    .replace(/ş/g, "s")
-    .replace(/ü/g, "u")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
     .replace(/[^a-z0-9 ]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -60,6 +74,16 @@ function safeJson(value) {
   }
 }
 
+function normalizeError(error) {
+  if (!error) {
+    return "Unknown error";
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return String(error.message || error);
+}
+
 async function writeSystemLog(DB, entry) {
   if (!DB) {
     return;
@@ -70,6 +94,7 @@ async function writeSystemLog(DB, entry) {
   const metadataJson = entry?.metadata == null ? null : safeJson(entry.metadata);
   const runTag = entry?.runTag ? String(entry.runTag) : null;
   const runId = entry?.runId == null ? null : Number(entry.runId);
+  const areaCountry = entry?.areaCountry ? canonicalCountryCode(entry.areaCountry) : null;
   const areaCity = entry?.areaCity ? String(entry.areaCity) : null;
   const areaDistrict = entry?.areaDistrict ? String(entry.areaDistrict) : null;
   const source = entry?.source ? String(entry.source) : null;
@@ -80,11 +105,11 @@ async function writeSystemLog(DB, entry) {
     await DB.prepare(
       `
         INSERT INTO system_logs (
-          level, event_type, run_tag, run_id, area_city, area_district, source, message, metadata_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          level, event_type, run_tag, run_id, area_country, area_city, area_district, source, message, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
     )
-      .bind(level, eventType, runTag, runId, areaCity, areaDistrict, source, message, metadataJson)
+      .bind(level, eventType, runTag, runId, areaCountry, areaCity, areaDistrict, source, message, metadataJson)
       .run();
   } catch (error) {
     console.log("Failed to write system log row:", String(error?.message || error));
@@ -93,10 +118,13 @@ async function writeSystemLog(DB, entry) {
 
 export async function onRequestPost(context) {
   const body = await parseBody(context.request);
-  if (!body) {
+  if (!body || typeof body !== "object") {
     return json({ ok: false, error: "Invalid JSON body." }, 400);
   }
+  return handleDispatch(context, body);
+}
 
+async function handleDispatch(context, body) {
   const requiredToken = context.env?.CRAWL_REQUEST_TOKEN;
   if (requiredToken) {
     const auth = context.request.headers.get("authorization") || "";
@@ -135,45 +163,76 @@ export async function onRequestPost(context) {
     );
   }
 
-  const city = canonicalAreaName(sanitizeInput(body.city, "Istanbul", 80), "Istanbul");
-  const district = canonicalAreaName(sanitizeInput(body.district, "Atasehir", 80), "Atasehir");
+  const country = canonicalCountryCode(sanitizeInput(body.country, "TR", 8), "TR");
+  const defaults = areaDefaultsForCountry(country);
+  const city = canonicalAreaName(sanitizeInput(body.city, defaults.city, 80), defaults.city);
+  const district = canonicalAreaName(sanitizeInput(body.district, defaults.district, 80), defaults.district);
+  const citySlug = sanitizeInput(body.citySlug || body.city_slug, "", 120);
+  const districtSlug = sanitizeInput(body.districtSlug || body.district_slug, "", 120);
   const sources = sanitizeInput(body.sources, "all", 240);
 
   await writeSystemLog(DB, {
     level: "info",
     eventType: "dispatch.requested",
+    areaCountry: country,
     areaCity: city,
     areaDistrict: district,
     message: "Crawl workflow dispatch requested.",
-    metadata: { sources, workflowFile, ref }
+    metadata: { sources, workflowFile, ref, country, citySlug, districtSlug }
   });
 
-  const ghRes = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/actions/workflows/${workflowFile}/dispatches`,
-    {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${githubToken}`,
-        accept: "application/vnd.github+json",
-        "content-type": "application/json",
-        "user-agent": "real-estate-crawler-cloudflare-pages"
+  let ghRes;
+  try {
+    ghRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/actions/workflows/${workflowFile}/dispatches`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${githubToken}`,
+          accept: "application/vnd.github+json",
+          "content-type": "application/json",
+          "user-agent": "real-estate-crawler-cloudflare-pages"
+        },
+        body: JSON.stringify({
+          ref,
+          inputs: {
+            country,
+            city,
+            district,
+            city_slug: citySlug,
+            district_slug: districtSlug,
+            sources
+          }
+        })
+      }
+    );
+  } catch (error) {
+    const details = normalizeError(error);
+    await writeSystemLog(DB, {
+      level: "error",
+      eventType: "dispatch.failed",
+      areaCountry: country,
+      areaCity: city,
+      areaDistrict: district,
+      message: "GitHub workflow dispatch request failed before response.",
+      metadata: { details }
+    });
+    return json(
+      {
+        ok: false,
+        error: "GitHub workflow dispatch request failed.",
+        details
       },
-      body: JSON.stringify({
-        ref,
-        inputs: {
-          city,
-          district,
-          sources
-        }
-      })
-    }
-  );
+      502
+    );
+  }
 
   if (!ghRes.ok) {
     const txt = await ghRes.text();
     await writeSystemLog(DB, {
       level: "error",
       eventType: "dispatch.failed",
+      areaCountry: country,
       areaCity: city,
       areaDistrict: district,
       message: "GitHub workflow dispatch failed.",
@@ -196,10 +255,11 @@ export async function onRequestPost(context) {
   await writeSystemLog(DB, {
     level: "info",
     eventType: "dispatch.completed",
+    areaCountry: country,
     areaCity: city,
     areaDistrict: district,
     message: "GitHub workflow dispatched successfully.",
-    metadata: { sources, workflowFile, ref }
+    metadata: { sources, workflowFile, ref, country, citySlug, districtSlug }
   });
 
   return json({
@@ -207,18 +267,45 @@ export async function onRequestPost(context) {
     message: "Workflow dispatched.",
     workflowFile,
     ref,
-    inputs: { city, district, sources }
+    inputs: { country, city, district, city_slug: citySlug, district_slug: districtSlug, sources }
   });
 }
 
-export async function onRequestGet() {
+export async function onRequestGet(context) {
+  const url = new URL(context.request.url);
+  const p = url.searchParams;
+  const dispatchHint = String(p.get("dispatch") || "")
+    .trim()
+    .toLowerCase();
+  const wantsDispatch =
+    dispatchHint === "1" ||
+    dispatchHint === "true" ||
+    dispatchHint === "yes" ||
+    p.has("country") ||
+    p.has("city") ||
+    p.has("district");
+
+  if (wantsDispatch) {
+    return handleDispatch(context, {
+      country: p.get("country") || "",
+      city: p.get("city") || "",
+      district: p.get("district") || "",
+      city_slug: p.get("city_slug") || p.get("citySlug") || "",
+      district_slug: p.get("district_slug") || p.get("districtSlug") || "",
+      sources: p.get("sources") || "all"
+    });
+  }
+
   return json({
     ok: true,
     endpoint: "/api/crawl-request",
     method: "POST",
     body: {
+      country: "TR",
       city: "Istanbul",
       district: "Atasehir",
+      city_slug: "",
+      district_slug: "",
       sources: "all"
     }
   });

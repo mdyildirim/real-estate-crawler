@@ -29,8 +29,8 @@ function persistRunToSqlite({ dbPath, runTag, payload }) {
 
   const insertRunStmt = db.prepare(`
     INSERT INTO crawl_runs (
-      run_tag, started_at, finished_at, area_city, area_district, raw_count, unique_count
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      run_tag, started_at, finished_at, area_country, area_city, area_district, raw_count, unique_count
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const insertSourceRunStmt = db.prepare(`
@@ -52,8 +52,8 @@ function persistRunToSqlite({ dbPath, runTag, payload }) {
       neighborhood, room_count, building_age, floor_info, deed_status, credit_suitability, in_site, usage_status,
       price_tl, gross_sqm, net_sqm,
       avg_price_for_sale, endeksa_min_price, endeksa_max_price,
-      area_city, area_district, first_seen_at, last_seen_at, last_seen_run_id, last_crawled_at, is_active
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      area_country, area_city, area_district, first_seen_at, last_seen_at, last_seen_run_id, last_crawled_at, is_active
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
     ON CONFLICT(source, listing_key) DO UPDATE SET
       listing_id = excluded.listing_id,
       url = excluded.url,
@@ -73,6 +73,7 @@ function persistRunToSqlite({ dbPath, runTag, payload }) {
       avg_price_for_sale = excluded.avg_price_for_sale,
       endeksa_min_price = excluded.endeksa_min_price,
       endeksa_max_price = excluded.endeksa_max_price,
+      area_country = excluded.area_country,
       area_city = excluded.area_city,
       area_district = excluded.area_district,
       last_seen_at = excluded.last_seen_at,
@@ -113,7 +114,8 @@ function persistRunToSqlite({ dbPath, runTag, payload }) {
   const deactivateSourceStmt = db.prepare(`
     UPDATE listings_current
     SET is_active = 0
-    WHERE area_city = ?
+    WHERE area_country = ?
+      AND area_city = ?
       AND area_district = ?
       AND source = ?
       AND last_seen_run_id <> ?
@@ -125,13 +127,17 @@ function persistRunToSqlite({ dbPath, runTag, payload }) {
     const results = payload.results || [];
     const listings = payload.listings || [];
     const sourceSummaries = summary.sourceSummaries || [];
+    const areaCountry = String(area.country || "TR").toUpperCase();
+    const areaCity = area.city || "Istanbul";
+    const areaDistrict = area.district || "Atasehir";
 
     const runInsert = insertRunStmt.run(
       runTag,
       summary.startedAt || nowIso,
       summary.finishedAt || nowIso,
-      area.city || "Istanbul",
-      area.district || "Atasehir",
+      areaCountry,
+      areaCity,
+      areaDistrict,
       Number(summary.totals?.crawledRaw || 0),
       Number(summary.totals?.crawledUnique || 0)
     );
@@ -178,8 +184,9 @@ function persistRunToSqlite({ dbPath, runTag, payload }) {
         toNullableNumber(listing.avgPriceForSale),
         toNullableNumber(listing.endeksaMinPrice),
         toNullableNumber(listing.endeksaMaxPrice),
-        area.city || "Istanbul",
-        area.district || "Atasehir",
+        areaCountry,
+        areaCity,
+        areaDistrict,
         crawledAt,
         crawledAt,
         runId,
@@ -215,7 +222,7 @@ function persistRunToSqlite({ dbPath, runTag, payload }) {
       .filter((s) => s.status === "ok")
       .map((s) => s.source);
     for (const source of successfulSources) {
-      deactivateSourceStmt.run(area.city || "Istanbul", area.district || "Atasehir", source, runId);
+      deactivateSourceStmt.run(areaCountry, areaCity, areaDistrict, source, runId);
     }
 
     return {
@@ -239,6 +246,10 @@ function toNullableNumber(value) {
 
 function ensureFeatureColumns(db) {
   const alterStatements = [
+    "ALTER TABLE crawl_runs ADD COLUMN area_country TEXT NOT NULL DEFAULT 'TR'",
+    "ALTER TABLE listings_current ADD COLUMN area_country TEXT NOT NULL DEFAULT 'TR'",
+    "ALTER TABLE system_logs ADD COLUMN area_country TEXT",
+    "ALTER TABLE deal_feedback ADD COLUMN area_country TEXT NOT NULL DEFAULT 'TR'",
     "ALTER TABLE listings_current ADD COLUMN neighborhood TEXT",
     "ALTER TABLE listings_current ADD COLUMN room_count TEXT",
     "ALTER TABLE listings_current ADD COLUMN building_age TEXT",
@@ -268,7 +279,11 @@ function ensureFeatureColumns(db) {
     "ALTER TABLE listing_snapshots ADD COLUMN endeksa_min_price INTEGER",
     "ALTER TABLE listing_snapshots ADD COLUMN endeksa_max_price INTEGER",
     "CREATE INDEX IF NOT EXISTS idx_listings_current_price_tl ON listings_current(price_tl)",
-    "CREATE INDEX IF NOT EXISTS idx_listings_current_room_neighborhood ON listings_current(room_count, neighborhood)"
+    "CREATE INDEX IF NOT EXISTS idx_listings_current_room_neighborhood ON listings_current(room_count, neighborhood)",
+    "CREATE INDEX IF NOT EXISTS idx_crawl_runs_country_area_started ON crawl_runs(area_country, area_city, area_district, started_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_listings_current_country_area_active ON listings_current(area_country, area_city, area_district, is_active)",
+    "CREATE INDEX IF NOT EXISTS idx_system_logs_country_area ON system_logs(area_country, area_city, area_district, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_deal_feedback_country_area_created ON deal_feedback(area_country, area_city, area_district, created_at DESC)"
   ];
 
   for (const sql of alterStatements) {

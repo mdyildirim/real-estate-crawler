@@ -55,6 +55,22 @@ function toNullableNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+const AREA_DEFAULTS = {
+  TR: { city: "Istanbul", district: "Atasehir" },
+  ES: { city: "Madrid", district: "Madrid Capital" }
+};
+
+function canonicalCountryCode(value, fallback = "TR") {
+  const raw = String(value || fallback || "TR")
+    .trim()
+    .toUpperCase();
+  return Object.prototype.hasOwnProperty.call(AREA_DEFAULTS, raw) ? raw : fallback;
+}
+
+function areaDefaultsForCountry(country) {
+  return AREA_DEFAULTS[canonicalCountryCode(country)] || AREA_DEFAULTS.TR;
+}
+
 function canonicalAreaName(value, fallback) {
   const raw = String(value || fallback || "")
     .replace(/\s+/g, " ")
@@ -63,13 +79,11 @@ function canonicalAreaName(value, fallback) {
     return String(fallback || "");
   }
   const ascii = raw
-    .toLocaleLowerCase("tr-TR")
-    .replace(/ç/g, "c")
-    .replace(/ğ/g, "g")
+    .replace(/İ/g, "I")
     .replace(/ı/g, "i")
-    .replace(/ö/g, "o")
-    .replace(/ş/g, "s")
-    .replace(/ü/g, "u")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
     .replace(/[^a-z0-9 ]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -106,6 +120,7 @@ async function writeSystemLog(DB, entry) {
   const eventType = String(entry?.eventType || "system");
   const runTag = entry?.runTag ? String(entry.runTag) : null;
   const runId = entry?.runId == null ? null : Number(entry.runId);
+  const areaCountry = entry?.areaCountry ? canonicalCountryCode(entry.areaCountry) : null;
   const areaCity = entry?.areaCity ? String(entry.areaCity) : null;
   const areaDistrict = entry?.areaDistrict ? String(entry.areaDistrict) : null;
   const source = entry?.source ? String(entry.source) : null;
@@ -118,11 +133,11 @@ async function writeSystemLog(DB, entry) {
     await DB.prepare(
       `
         INSERT INTO system_logs (
-          level, event_type, run_tag, run_id, area_city, area_district, source, message, metadata_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          level, event_type, run_tag, run_id, area_country, area_city, area_district, source, message, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
     )
-      .bind(level, eventType, runTag, runId, areaCity, areaDistrict, source, message, metadataJson)
+      .bind(level, eventType, runTag, runId, areaCountry, areaCity, areaDistrict, source, message, metadataJson)
       .run();
   } catch (error) {
     console.log("Failed to write system log row:", normalizeError(error));
@@ -132,34 +147,37 @@ async function writeSystemLog(DB, entry) {
 async function upsertRun(DB, summary, runTag) {
   const startedAt = summary?.startedAt || new Date().toISOString();
   const finishedAt = summary?.finishedAt || startedAt;
-  const areaCity = canonicalAreaName(summary?.area?.city, "Istanbul");
-  const areaDistrict = canonicalAreaName(summary?.area?.district, "Atasehir");
+  const areaCountry = canonicalCountryCode(summary?.area?.country, "TR");
+  const defaults = areaDefaultsForCountry(areaCountry);
+  const areaCity = canonicalAreaName(summary?.area?.city, defaults.city);
+  const areaDistrict = canonicalAreaName(summary?.area?.district, defaults.district);
   const rawCount = Number(summary?.totals?.crawledRaw || 0);
   const uniqueCount = Number(summary?.totals?.crawledUnique || 0);
 
   await DB.prepare(
     `
       INSERT OR IGNORE INTO crawl_runs (
-        run_tag, started_at, finished_at, area_city, area_district, raw_count, unique_count
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        run_tag, started_at, finished_at, area_country, area_city, area_district, raw_count, unique_count
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `
   )
-    .bind(runTag, startedAt, finishedAt, areaCity, areaDistrict, rawCount, uniqueCount)
+    .bind(runTag, startedAt, finishedAt, areaCountry, areaCity, areaDistrict, rawCount, uniqueCount)
     .run();
 
   await DB.prepare(
     `
       UPDATE crawl_runs
-      SET started_at = ?, finished_at = ?, area_city = ?, area_district = ?, raw_count = ?, unique_count = ?
+      SET started_at = ?, finished_at = ?, area_country = ?, area_city = ?, area_district = ?, raw_count = ?, unique_count = ?
       WHERE run_tag = ?
     `
   )
-    .bind(startedAt, finishedAt, areaCity, areaDistrict, rawCount, uniqueCount, runTag)
+    .bind(startedAt, finishedAt, areaCountry, areaCity, areaDistrict, rawCount, uniqueCount, runTag)
     .run();
 
   const row = await DB.prepare(`SELECT id FROM crawl_runs WHERE run_tag = ?`).bind(runTag).first();
   return {
     runId: row?.id,
+    areaCountry,
     areaCity,
     areaDistrict
   };
@@ -207,8 +225,10 @@ export async function onRequestPost(context) {
 
   const summary = payload.summary || {};
   const runTag = summary.runTag || `manual-${Date.now()}`;
-  const requestedAreaCity = canonicalAreaName(summary?.area?.city, "Istanbul");
-  const requestedAreaDistrict = canonicalAreaName(summary?.area?.district, "Atasehir");
+  const requestedAreaCountry = canonicalCountryCode(summary?.area?.country, "TR");
+  const defaults = areaDefaultsForCountry(requestedAreaCountry);
+  const requestedAreaCity = canonicalAreaName(summary?.area?.city, defaults.city);
+  const requestedAreaDistrict = canonicalAreaName(summary?.area?.district, defaults.district);
   const sourceSummaries = Array.isArray(summary.sourceSummaries)
     ? summary.sourceSummaries.map(normalizeSourceSummary)
     : [];
@@ -224,6 +244,7 @@ export async function onRequestPost(context) {
     level: "info",
     eventType: "ingest.received",
     runTag,
+    areaCountry: requestedAreaCountry,
     areaCity: requestedAreaCity,
     areaDistrict: requestedAreaDistrict,
     message: "Ingest payload received.",
@@ -244,6 +265,7 @@ export async function onRequestPost(context) {
       eventType: "ingest.run_persisted",
       runTag,
       runId: runInfo.runId,
+      areaCountry: runInfo.areaCountry,
       areaCity: runInfo.areaCity,
       areaDistrict: runInfo.areaDistrict,
       message: "Run metadata persisted."
@@ -281,6 +303,7 @@ export async function onRequestPost(context) {
       eventType: "ingest.source_runs_written",
       runTag,
       runId: runInfo.runId,
+      areaCountry: runInfo.areaCountry,
       areaCity: runInfo.areaCity,
       areaDistrict: runInfo.areaDistrict,
       message: "Source run summaries written.",
@@ -295,8 +318,8 @@ export async function onRequestPost(context) {
             neighborhood, room_count, building_age, floor_info, deed_status, credit_suitability, in_site, usage_status,
             price_tl, gross_sqm, net_sqm,
             avg_price_for_sale, endeksa_min_price, endeksa_max_price,
-            area_city, area_district, first_seen_at, last_seen_at, last_seen_run_id, last_crawled_at, is_active
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            area_country, area_city, area_district, first_seen_at, last_seen_at, last_seen_run_id, last_crawled_at, is_active
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
           ON CONFLICT(source, listing_key) DO UPDATE SET
             listing_id = excluded.listing_id,
             url = excluded.url,
@@ -316,6 +339,7 @@ export async function onRequestPost(context) {
             avg_price_for_sale = excluded.avg_price_for_sale,
             endeksa_min_price = excluded.endeksa_min_price,
             endeksa_max_price = excluded.endeksa_max_price,
+            area_country = excluded.area_country,
             area_city = excluded.area_city,
             area_district = excluded.area_district,
             last_seen_at = excluded.last_seen_at,
@@ -344,6 +368,7 @@ export async function onRequestPost(context) {
         listing.avgPriceForSale,
         listing.endeksaMinPrice,
         listing.endeksaMaxPrice,
+        runInfo.areaCountry,
         runInfo.areaCity,
         runInfo.areaDistrict,
         listing.crawledAt,
@@ -359,6 +384,7 @@ export async function onRequestPost(context) {
       eventType: "ingest.listings_current_written",
       runTag,
       runId: runInfo.runId,
+      areaCountry: runInfo.areaCountry,
       areaCity: runInfo.areaCity,
       areaDistrict: runInfo.areaDistrict,
       message: "Listings current upsert completed.",
@@ -427,6 +453,7 @@ export async function onRequestPost(context) {
       eventType: "ingest.snapshots_written",
       runTag,
       runId: runInfo.runId,
+      areaCountry: runInfo.areaCountry,
       areaCity: runInfo.areaCity,
       areaDistrict: runInfo.areaDistrict,
       message: "Listing snapshots written.",
@@ -439,12 +466,13 @@ export async function onRequestPost(context) {
         `
           UPDATE listings_current
           SET is_active = 0
-          WHERE area_city = ?
+          WHERE area_country = ?
+            AND area_city = ?
             AND area_district = ?
             AND source = ?
             AND last_seen_run_id <> ?
         `
-      ).bind(runInfo.areaCity, runInfo.areaDistrict, source, runInfo.runId)
+      ).bind(runInfo.areaCountry, runInfo.areaCity, runInfo.areaDistrict, source, runInfo.runId)
     );
     await runInBatches(DB, staleStatements, 40);
 
@@ -453,6 +481,7 @@ export async function onRequestPost(context) {
       eventType: "ingest.completed",
       runTag,
       runId: runInfo.runId,
+      areaCountry: runInfo.areaCountry,
       areaCity: runInfo.areaCity,
       areaDistrict: runInfo.areaDistrict,
       message: "Ingest completed successfully.",
@@ -474,6 +503,7 @@ export async function onRequestPost(context) {
       level: "error",
       eventType: "ingest.failed",
       runTag,
+      areaCountry: requestedAreaCountry,
       areaCity: requestedAreaCity,
       areaDistrict: requestedAreaDistrict,
       message: "Ingest failed.",

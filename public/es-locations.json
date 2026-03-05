@@ -1,0 +1,129 @@
+{
+  "generatedAt": "2026-03-05T11:00:00.000Z",
+  "source": "https://www.pisos.com/venta/",
+  "defaults": {
+    "city": "Madrid",
+    "district": "Madrid Capital",
+    "citySlug": "madrid",
+    "districtSlug": "madrid_capital_zona_urbana"
+  },
+  "items": [
+    {
+      "city": "Madrid",
+      "citySlug": "madrid",
+      "districts": [
+        { "name": "Madrid (Genel)", "slug": "madrid" },
+        { "name": "Madrid Capital", "slug": "madrid_capital_zona_urbana" },
+        { "name": "Centro", "slug": "madrid_capital_centro" },
+        { "name": "Chamartin", "slug": "madrid_capital_chamartin" },
+        { "name": "Salamanca", "slug": "madrid_capital_salamanca" },
+        { "name": "Carabanchel", "slug": "madrid_capital_carabanchel" },
+        { "name": "Retiro", "slug": "madrid_capital_retiro" },
+        { "name": "Barajas", "slug": "madrid_capital_barajas" }
+      ]
+    },
+    {
+      "city": "Barcelona",
+      "citySlug": "barcelona",
+      "districts": [
+        { "name": "Barcelona (Genel)", "slug": "barcelona" },
+        { "name": "Barcelona Capital", "slug": "barcelona_capital" }
+      ]
+    },
+    {
+      "city": "Valencia",
+      "citySlug": "valencia",
+      "districts": [
+        { "name": "Valencia (Genel)", "slug": "valencia" },
+        { "name": "Valencia Capital (Zona Urbana)", "slug": "valencia_capital_zona_urbana" }
+      ]
+    },
+    {
+      "city": "Malaga",
+      "citySlug": "malaga",
+      "districts": [
+        { "name": "Malaga (Genel)", "slug": "malaga" },
+        { "name": "Malaga Capital (Zona Urbana)", "slug": "malaga_capital_zona_urbana" }
+      ]
+    },
+    {
+      "city": "Sevilla",
+      "citySlug": "sevilla",
+      "districts": [
+        { "name": "Sevilla (Genel)", "slug": "sevilla" },
+        { "name": "Sevilla Capital", "slug": "sevilla_capital" }
+      ]
+    },
+    {
+      "city": "Zaragoza",
+      "citySlug": "zaragoza",
+      "districts": [
+        { "name": "Zaragoza (Genel)", "slug": "zaragoza" },
+        { "name": "Zaragoza Capital", "slug": "zaragoza_capital" }
+      ]
+    },
+    {
+      "city": "Alicante",
+      "citySlug": "alicante",
+      "districts": [
+        { "name": "Alicante (Genel)", "slug": "alicante" }
+      ]
+    },
+    {
+      "city": "Murcia",
+      "citySlug": "murcia",
+      "districts": [
+        { "name": "Murcia (Genel)", "slug": "murcia" }
+      ]
+    },
+    {
+      "city": "Bilbao",
+      "citySlug": "bilbao",
+      "districts": [
+        { "name": "Bilbao (Genel)", "slug": "bilbao" }
+      ]
+    },
+    {
+      "city": "Palma de Mallorca",
+      "citySlug": "palma_de_mallorca",
+      "districts": [
+        { "name": "Palma de Mallorca (Genel)", "slug": "palma_de_mallorca" }
+      ]
+    },
+    {
+      "city": "Granada",
+      "citySlug": "granada",
+      "districts": [
+        { "name": "Granada (Genel)", "slug": "granada" }
+      ]
+    },
+    {
+      "city": "Cordoba",
+      "citySlug": "cordoba",
+      "districts": [
+        { "name": "Cordoba (Genel)", "slug": "cordoba" }
+      ]
+    },
+    {
+      "city": "Valladolid",
+      "citySlug": "valladolid",
+      "districts": [
+        { "name": "Valladolid (Genel)", "slug": "valladolid" }
+      ]
+    },
+    {
+      "city": "A Coruna",
+      "citySlug": "a_coruna",
+      "districts": [
+        { "name": "A Coruna (Genel)", "slug": "a_coruna" }
+      ]
+    },
+    {
+      "city": "Gijon",
+      "citySlug": "gijon_concejo_xixon_conceyu_gijon",
+      "districts": [
+        { "name": "Gijon (Genel)", "slug": "gijon_concejo_xixon_conceyu_gijon" }
+      ]
+    }
+  ]
+}
