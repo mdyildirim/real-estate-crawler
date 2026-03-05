@@ -20,6 +20,9 @@ function toInt(value, fallback) {
 }
 
 function toFloat(value, fallback) {
+  if (value == null || value === "") {
+    return fallback;
+  }
   const n = Number(value);
   if (!Number.isFinite(n)) {
     return fallback;
@@ -265,6 +268,10 @@ function parseAssetClass(titleText) {
 
 function isApartmentLikeAsset(assetClass) {
   return assetClass === "daire" || assetClass === "residence";
+}
+
+function requiresStrictAssetMatch(assetClass) {
+  return assetClass === "prefabrik" || assetClass === "villa" || assetClass === "mustakil" || assetClass === "ofis";
 }
 
 function assetClassSimilarity(targetClass, compClass) {
@@ -677,6 +684,514 @@ function buildScoringUniverse(rows) {
   };
 }
 
+function safeLog(value) {
+  return Math.log(Math.max(1, Number(value) || 0));
+}
+
+function mean(values) {
+  if (!values.length) {
+    return null;
+  }
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function hashString(text) {
+  const str = String(text || "");
+  let hash = 2166136261;
+  for (let i = 0; i < str.length; i += 1) {
+    hash ^= str.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function buildSmoothedMeanMap(rows, keyFn, globalMean, smoothing = 8) {
+  const stats = new Map();
+  for (const row of rows) {
+    if (!Number.isFinite(row._pricePerSqm) || row._pricePerSqm <= 0) {
+      continue;
+    }
+    const key = keyFn(row);
+    if (!key) {
+      continue;
+    }
+    if (!stats.has(key)) {
+      stats.set(key, { count: 0, sum: 0 });
+    }
+    const entry = stats.get(key);
+    entry.count += 1;
+    entry.sum += safeLog(row._pricePerSqm);
+  }
+
+  const out = new Map();
+  for (const [key, entry] of stats.entries()) {
+    const smoothed =
+      (entry.sum + smoothing * globalMean) /
+      Math.max(1, entry.count + smoothing);
+    out.set(key, smoothed);
+  }
+  return out;
+}
+
+function buildEncoder(rows) {
+  const yLogs = rows
+    .map((row) => safeLog(row._pricePerSqm))
+    .filter((value) => Number.isFinite(value));
+  const globalMean = Number.isFinite(mean(yLogs)) ? mean(yLogs) : safeLog(60000);
+
+  return {
+    globalMean,
+    neighborhoodMean: buildSmoothedMeanMap(rows, (row) => row._normNeighborhood, globalMean),
+    roomMean: buildSmoothedMeanMap(rows, (row) => row._normRoomCount, globalMean),
+    assetMean: buildSmoothedMeanMap(rows, (row) => row._assetClass, globalMean),
+    floorMean: buildSmoothedMeanMap(rows, (row) => row._floorCategory, globalMean),
+    deedMean: buildSmoothedMeanMap(rows, (row) => row._deedCategory, globalMean),
+    creditMean: buildSmoothedMeanMap(rows, (row) => row._creditCategory, globalMean),
+    siteMean: buildSmoothedMeanMap(rows, (row) => row._siteCategory, globalMean),
+    usageMean: buildSmoothedMeanMap(rows, (row) => row._usageCategory, globalMean)
+  };
+}
+
+function encodedDelta(map, key, globalMean) {
+  if (!key || !map.has(key)) {
+    return 0;
+  }
+  return map.get(key) - globalMean;
+}
+
+function featureVector(row, encoder) {
+  const globalMean = encoder?.globalMean ?? safeLog(60000);
+  const logSqm = safeLog(row._effectiveSqm);
+  const roomTotalNorm = Number.isFinite(row._roomTotal) ? clamp(row._roomTotal / 8, 0, 1.5) : 0.5;
+  const ageNorm = Number.isFinite(row._buildingAgeYears) ? clamp(row._buildingAgeYears / 40, 0, 1.5) : 0.55;
+
+  return [
+    1,
+    logSqm,
+    roomTotalNorm,
+    ageNorm,
+    row._floorScore ?? 0.6,
+    row._tapuScore ?? 0.55,
+    row._krediScore ?? 0.55,
+    row._siteScore ?? 0.58,
+    row._usageScore ?? 0.58,
+    encodedDelta(encoder?.neighborhoodMean, row._normNeighborhood, globalMean),
+    encodedDelta(encoder?.roomMean, row._normRoomCount, globalMean),
+    encodedDelta(encoder?.assetMean, row._assetClass, globalMean),
+    encodedDelta(encoder?.floorMean, row._floorCategory, globalMean),
+    encodedDelta(encoder?.deedMean, row._deedCategory, globalMean),
+    encodedDelta(encoder?.creditMean, row._creditCategory, globalMean),
+    encodedDelta(encoder?.siteMean, row._siteCategory, globalMean),
+    encodedDelta(encoder?.usageMean, row._usageCategory, globalMean)
+  ];
+}
+
+function solveLinearSystem(matrix, vector) {
+  const n = matrix.length;
+  const a = matrix.map((row) => row.slice());
+  const b = vector.slice();
+
+  for (let i = 0; i < n; i += 1) {
+    let pivot = i;
+    for (let r = i + 1; r < n; r += 1) {
+      if (Math.abs(a[r][i]) > Math.abs(a[pivot][i])) {
+        pivot = r;
+      }
+    }
+    if (Math.abs(a[pivot][i]) < 1e-10) {
+      return null;
+    }
+    if (pivot !== i) {
+      [a[i], a[pivot]] = [a[pivot], a[i]];
+      [b[i], b[pivot]] = [b[pivot], b[i]];
+    }
+
+    const diag = a[i][i];
+    for (let c = i; c < n; c += 1) {
+      a[i][c] /= diag;
+    }
+    b[i] /= diag;
+
+    for (let r = 0; r < n; r += 1) {
+      if (r === i) {
+        continue;
+      }
+      const factor = a[r][i];
+      if (Math.abs(factor) < 1e-12) {
+        continue;
+      }
+      for (let c = i; c < n; c += 1) {
+        a[r][c] -= factor * a[i][c];
+      }
+      b[r] -= factor * b[i];
+    }
+  }
+  return b;
+}
+
+function trainRidgeModel(rows, opts = {}) {
+  const trainRows = rows.filter((row) => Number.isFinite(row._pricePerSqm) && row._pricePerSqm > 0);
+  if (trainRows.length < 30) {
+    return null;
+  }
+
+  const lambda = clamp(toFloat(opts.lambda, 8), 0.01, 1000);
+  const encoder = buildEncoder(trainRows);
+  const sampleVector = featureVector(trainRows[0], encoder);
+  const p = sampleVector.length;
+  const xtx = Array.from({ length: p }, () => new Array(p).fill(0));
+  const xty = new Array(p).fill(0);
+
+  for (const row of trainRows) {
+    const x = featureVector(row, encoder);
+    const y = safeLog(row._pricePerSqm);
+    for (let i = 0; i < p; i += 1) {
+      xty[i] += x[i] * y;
+      for (let j = i; j < p; j += 1) {
+        xtx[i][j] += x[i] * x[j];
+      }
+    }
+  }
+
+  for (let i = 0; i < p; i += 1) {
+    for (let j = 0; j < i; j += 1) {
+      xtx[i][j] = xtx[j][i];
+    }
+    const ridgePenalty = i === 0 ? lambda * 0.12 : lambda;
+    xtx[i][i] += ridgePenalty;
+  }
+
+  const beta = solveLinearSystem(xtx, xty);
+  if (!beta) {
+    return null;
+  }
+
+  const trainApe = [];
+  for (const row of trainRows) {
+    const predicted = predictPsm({ encoder, beta }, row);
+    const actual = row._pricePerSqm;
+    if (Number.isFinite(predicted) && predicted > 0 && Number.isFinite(actual) && actual > 0) {
+      trainApe.push(Math.abs(predicted - actual) / actual);
+    }
+  }
+
+  return {
+    encoder,
+    beta,
+    lambda,
+    trainRows: trainRows.length,
+    trainMAPE: Number.isFinite(mean(trainApe)) ? mean(trainApe) : null
+  };
+}
+
+function predictLogPsm(model, row) {
+  if (!model?.encoder || !Array.isArray(model?.beta)) {
+    return null;
+  }
+  const x = featureVector(row, model.encoder);
+  if (x.length !== model.beta.length) {
+    return null;
+  }
+  let y = 0;
+  for (let i = 0; i < x.length; i += 1) {
+    y += x[i] * model.beta[i];
+  }
+  return Number.isFinite(y) ? y : null;
+}
+
+function predictPsm(model, row) {
+  const y = predictLogPsm(model, row);
+  if (!Number.isFinite(y)) {
+    return null;
+  }
+  const psm = Math.exp(y);
+  if (!Number.isFinite(psm) || psm <= 0) {
+    return null;
+  }
+  return psm;
+}
+
+function computeComparableMedianPsm(comps, minComps) {
+  const compAdjustedPsmRows = comps
+    .map((x) => ({
+      value: x._adjustedPricePerSqm,
+      weight: 0.12 + Math.pow(x._similarity, 2) * 1.9
+    }))
+    .filter((x) => Number.isFinite(x.value) && Number.isFinite(x.weight) && x.weight > 0);
+  if (compAdjustedPsmRows.length < minComps) {
+    return null;
+  }
+  return weightedMedian(compAdjustedPsmRows);
+}
+
+function blendFairPsm(compMedianPsm, modelPredictedPsm, comparableCount) {
+  const hasComp = Number.isFinite(compMedianPsm) && compMedianPsm > 0;
+  const hasModel = Number.isFinite(modelPredictedPsm) && modelPredictedPsm > 0;
+  if (!hasComp && !hasModel) {
+    return { fairPsm: null, compWeight: null };
+  }
+  if (hasComp && !hasModel) {
+    return { fairPsm: compMedianPsm, compWeight: 1 };
+  }
+  if (!hasComp && hasModel) {
+    return { fairPsm: modelPredictedPsm, compWeight: 0 };
+  }
+
+  const clampedModel = clamp(modelPredictedPsm, compMedianPsm * 0.65, compMedianPsm * 1.45);
+  const compWeight = clamp(0.55 + Math.min(Math.max(0, comparableCount), 25) / 100, 0.55, 0.8);
+  const fairPsm = compMedianPsm * compWeight + clampedModel * (1 - compWeight);
+  return { fairPsm, compWeight };
+}
+
+function portalBaselinePsm(row, trainRows) {
+  const rows = trainRows.filter((x) => Number.isFinite(x._pricePerSqm) && x._pricePerSqm > 0);
+  if (!rows.length) {
+    return null;
+  }
+  const sameNeighborhoodRoom = rows.filter(
+    (x) =>
+      row._normNeighborhood &&
+      row._normRoomCount &&
+      x._normNeighborhood === row._normNeighborhood &&
+      x._normRoomCount === row._normRoomCount
+  );
+  if (sameNeighborhoodRoom.length >= 4) {
+    return median(sameNeighborhoodRoom.map((x) => x._pricePerSqm));
+  }
+
+  const sameRoom = rows.filter((x) => row._normRoomCount && x._normRoomCount === row._normRoomCount);
+  if (sameRoom.length >= 8) {
+    return median(sameRoom.map((x) => x._pricePerSqm));
+  }
+
+  const sameNeighborhood = rows.filter(
+    (x) => row._normNeighborhood && x._normNeighborhood === row._normNeighborhood
+  );
+  if (sameNeighborhood.length >= 8) {
+    return median(sameNeighborhood.map((x) => x._pricePerSqm));
+  }
+  return median(rows.map((x) => x._pricePerSqm));
+}
+
+function meanAbsoluteError(entries) {
+  if (!entries.length) {
+    return null;
+  }
+  return mean(entries.map((x) => Math.abs(x.pred - x.actual)));
+}
+
+function meanAbsolutePercentageError(entries) {
+  if (!entries.length) {
+    return null;
+  }
+  return mean(
+    entries
+      .filter((x) => Number.isFinite(x.actual) && x.actual > 0)
+      .map((x) => Math.abs(x.pred - x.actual) / x.actual)
+  );
+}
+
+function precisionAtK(records, scoreField, k, truthField = "truthDeal") {
+  if (!records.length || k <= 0) {
+    return null;
+  }
+  const sorted = [...records].sort((a, b) => b[scoreField] - a[scoreField]);
+  const top = sorted.slice(0, Math.min(k, sorted.length));
+  if (!top.length) {
+    return null;
+  }
+  const positives = top.filter((row) => row[truthField]).length;
+  return positives / top.length;
+}
+
+function meanTruthAtK(records, scoreField, k, truthField = "truthDiscount") {
+  if (!records.length || k <= 0) {
+    return null;
+  }
+  const sorted = [...records].sort((a, b) => b[scoreField] - a[scoreField]);
+  const top = sorted.slice(0, Math.min(k, sorted.length));
+  if (!top.length) {
+    return null;
+  }
+  const values = top.map((row) => row[truthField]).filter((v) => Number.isFinite(v));
+  return values.length ? mean(values) : null;
+}
+
+function dcgAtK(rows, k, relevanceField = "truthDiscount") {
+  const top = rows.slice(0, Math.min(k, rows.length));
+  let score = 0;
+  for (let i = 0; i < top.length; i += 1) {
+    const rel = Math.max(0, Number(top[i][relevanceField]) || 0);
+    score += rel / Math.log2(i + 2);
+  }
+  return score;
+}
+
+function ndcgAtK(records, scoreField, k, relevanceField = "truthDiscount") {
+  if (!records.length || k <= 0) {
+    return null;
+  }
+  const predicted = [...records].sort((a, b) => b[scoreField] - a[scoreField]);
+  const ideal = [...records].sort((a, b) => (b[relevanceField] || 0) - (a[relevanceField] || 0));
+  const dcg = dcgAtK(predicted, k, relevanceField);
+  const idcg = dcgAtK(ideal, k, relevanceField);
+  if (!(idcg > 0)) {
+    return null;
+  }
+  return dcg / idcg;
+}
+
+export function buildBacktestReport(preRows, opts = {}) {
+  const folds = Math.max(3, Math.min(10, toInt(opts.folds, 5)));
+  const minComps = Math.max(3, Math.min(30, toInt(opts.minComps, 6)));
+  const strictSameNeighborhood = toBool(opts.strictSameNeighborhood, true);
+  const minSameNeighborhoodComps = Math.max(1, Math.min(10, toInt(opts.minSameNeighborhoodComps, 3)));
+  const universe = buildScoringUniverse(preRows);
+  const rows = universe.rows;
+
+  if (rows.length < 80) {
+    return {
+      ok: false,
+      reason: "Not enough listings for backtest.",
+      requiredListings: 80,
+      availableListings: rows.length
+    };
+  }
+
+  const modelErrors = [];
+  const portalErrors = [];
+  const rankingRows = [];
+  let trainedFoldCount = 0;
+
+  for (let fold = 0; fold < folds; fold += 1) {
+    const trainRows = [];
+    const testRows = [];
+    for (const row of rows) {
+      const bucket = hashString(row.listingKey || row.url || "") % folds;
+      if (bucket === fold) {
+        testRows.push(row);
+      } else {
+        trainRows.push(row);
+      }
+    }
+    if (trainRows.length < 40 || testRows.length < 10) {
+      continue;
+    }
+
+    const model = trainRidgeModel(trainRows, { lambda: toFloat(opts.modelLambda, 8) });
+    if (!model) {
+      continue;
+    }
+    trainedFoldCount += 1;
+
+    for (const row of testRows) {
+      const actual = row._pricePerSqm;
+      if (!Number.isFinite(actual) || actual <= 0) {
+        continue;
+      }
+
+      const picked = pickComparables(row, trainRows, {
+        minComps,
+        strictSameNeighborhood,
+        minSameNeighborhoodComps
+      });
+      const comps = picked.comps || [];
+      const sameNeighborhoodCount = picked.sameNeighborhoodComparableCount || 0;
+      const comparableMedian = computeComparableMedianPsm(comps, minComps);
+      const comparableMedianValid =
+        Number.isFinite(comparableMedian) &&
+        (!strictSameNeighborhood || !row._normNeighborhood || sameNeighborhoodCount >= minSameNeighborhoodComps);
+
+      const modelPredPsm = predictPsm(model, row);
+      const blended = blendFairPsm(comparableMedianValid ? comparableMedian : null, modelPredPsm, comps.length);
+      if (Number.isFinite(blended.fairPsm) && blended.fairPsm > 0) {
+        modelErrors.push({ pred: blended.fairPsm, actual });
+      }
+
+      const portalPredPsm = portalBaselinePsm(row, trainRows);
+      if (Number.isFinite(portalPredPsm) && portalPredPsm > 0) {
+        portalErrors.push({ pred: portalPredPsm, actual });
+      }
+
+      if (comparableMedianValid && comparableMedian > 0) {
+        const truthDiscount = (comparableMedian - actual) / comparableMedian;
+        if (Number.isFinite(blended.fairPsm) && blended.fairPsm > 0) {
+          rankingRows.push({
+            truthDeal: truthDiscount >= 0.15,
+            truthDiscount,
+            modelScore: (blended.fairPsm - actual) / blended.fairPsm,
+            portalScore: -actual
+          });
+        }
+      }
+    }
+  }
+
+  const k10 = 10;
+  const k20 = 20;
+  const modelPrecisionAt10 = precisionAtK(rankingRows, "modelScore", k10);
+  const portalPrecisionAt10 = precisionAtK(rankingRows, "portalScore", k10);
+  const modelPrecisionAt20 = precisionAtK(rankingRows, "modelScore", k20);
+  const portalPrecisionAt20 = precisionAtK(rankingRows, "portalScore", k20);
+  const modelMeanDiscountAt20 = meanTruthAtK(rankingRows, "modelScore", k20);
+  const portalMeanDiscountAt20 = meanTruthAtK(rankingRows, "portalScore", k20);
+  const modelNdcgAt20 = ndcgAtK(rankingRows, "modelScore", k20);
+  const portalNdcgAt20 = ndcgAtK(rankingRows, "portalScore", k20);
+
+  return {
+    ok: true,
+    folds,
+    trainedFoldCount,
+    sample: {
+      scoringRows: rows.length,
+      outliersFiltered: universe.filteredOut,
+      dedupedRows: universe.dedupedOut,
+      evaluatedPredictions: modelErrors.length
+    },
+    metrics: {
+      model: {
+        maePsm: meanAbsoluteError(modelErrors),
+        mapePsm: meanAbsolutePercentageError(modelErrors),
+        precisionAt10: modelPrecisionAt10,
+        precisionAt20: modelPrecisionAt20,
+        meanTruthDiscountAt20: modelMeanDiscountAt20,
+        ndcgAt20: modelNdcgAt20
+      },
+      portalBaseline: {
+        maePsm: meanAbsoluteError(portalErrors),
+        mapePsm: meanAbsolutePercentageError(portalErrors),
+        precisionAt10: portalPrecisionAt10,
+        precisionAt20: portalPrecisionAt20,
+        meanTruthDiscountAt20: portalMeanDiscountAt20,
+        ndcgAt20: portalNdcgAt20
+      }
+    },
+    lift: {
+      precisionAt10:
+        Number.isFinite(modelPrecisionAt10) && Number.isFinite(portalPrecisionAt10) && portalPrecisionAt10 > 0
+          ? modelPrecisionAt10 / portalPrecisionAt10
+          : null,
+      precisionAt20:
+        Number.isFinite(modelPrecisionAt20) && Number.isFinite(portalPrecisionAt20) && portalPrecisionAt20 > 0
+          ? modelPrecisionAt20 / portalPrecisionAt20
+          : null,
+      meanTruthDiscountAt20:
+        Number.isFinite(modelMeanDiscountAt20) && Number.isFinite(portalMeanDiscountAt20) && portalMeanDiscountAt20 !== 0
+          ? modelMeanDiscountAt20 / portalMeanDiscountAt20
+          : null,
+      ndcgAt20:
+        Number.isFinite(modelNdcgAt20) && Number.isFinite(portalNdcgAt20) && portalNdcgAt20 > 0
+          ? modelNdcgAt20 / portalNdcgAt20
+          : null
+    },
+    config: {
+      minComps,
+      strictSameNeighborhood,
+      minSameNeighborhoodComps
+    }
+  };
+}
+
 function effectiveSqm(row) {
   if (Number.isFinite(row.netSqm) && row.netSqm > 0) {
     return row.netSqm;
@@ -750,11 +1265,19 @@ function withPrecomputed(row) {
   };
 }
 
-function pickComparables(target, rows, minComps) {
+function pickComparables(target, rows, opts) {
+  const minComps = Math.max(3, Number(opts?.minComps) || 6);
+  const strictSameNeighborhood = Boolean(opts?.strictSameNeighborhood);
+  const minSameNeighborhoodComps = Math.max(1, Number(opts?.minSameNeighborhoodComps) || 3);
   const candidates = rows.filter((x) => x.listingKey !== target.listingKey && Number.isFinite(x._pricePerSqm));
   const scored = [];
+  const strictAssetMatch = requiresStrictAssetMatch(target._assetClass);
 
   for (const comp of candidates) {
+    if (strictAssetMatch && comp._assetClass !== target._assetClass) {
+      continue;
+    }
+
     if (
       target._assetClass !== "unknown" &&
       comp._assetClass !== "unknown" &&
@@ -830,9 +1353,12 @@ function pickComparables(target, rows, minComps) {
   );
   const minNeighborhoodComps = Math.max(minComps, 4);
   const neighborhoodFocused = sameNeighborhood.length >= minNeighborhoodComps;
-  const picked = neighborhoodFocused
+  const strictNeighborhoodGate = strictSameNeighborhood && Boolean(target._normNeighborhood);
+  const picked = strictNeighborhoodGate
     ? sameNeighborhood.slice(0, Math.min(80, sameNeighborhood.length))
-    : scored.slice(0, Math.min(80, scored.length));
+    : neighborhoodFocused
+      ? sameNeighborhood.slice(0, Math.min(80, sameNeighborhood.length))
+      : scored.slice(0, Math.min(80, scored.length));
 
   let neighborhoodRoomMatches = 0;
   let roomMatches = 0;
@@ -851,12 +1377,15 @@ function pickComparables(target, rows, minComps) {
   const neighborhoodRoomRatio = neighborhoodRoomMatches / pickedCount;
   const roomRatio = roomMatches / pickedCount;
 
-  let bucket = neighborhoodFocused ? "neighborhood+multifactor" : "district+multifactor";
+  let bucket = neighborhoodFocused || strictNeighborhoodGate ? "neighborhood+multifactor" : "district+multifactor";
+  if (strictNeighborhoodGate && sameNeighborhood.length < minSameNeighborhoodComps) {
+    bucket = "district+sqm";
+  }
   if (neighborhoodFocused && roomRatio >= 0.5) {
     bucket = "neighborhood+room";
-  } else if (!neighborhoodFocused && neighborhoodRoomRatio >= 0.5) {
+  } else if (!neighborhoodFocused && !strictNeighborhoodGate && neighborhoodRoomRatio >= 0.5) {
     bucket = "neighborhood+room";
-  } else if (!neighborhoodFocused && roomRatio >= 0.5) {
+  } else if (!neighborhoodFocused && !strictNeighborhoodGate && roomRatio >= 0.5) {
     bucket = "district+room";
   } else if (picked.length < minComps) {
     bucket = "district+sqm";
@@ -866,7 +1395,8 @@ function pickComparables(target, rows, minComps) {
     bucket,
     comps: picked,
     neighborhoodFocused,
-    sameNeighborhoodComparableCount: sameNeighborhood.length
+    sameNeighborhoodComparableCount: sameNeighborhood.length,
+    strictNeighborhoodGate
   };
 }
 
@@ -875,7 +1405,7 @@ function scoreDeal(target, rows, opts) {
     return null;
   }
 
-  const picked = pickComparables(target, rows, opts.minComps);
+  const picked = pickComparables(target, rows, opts);
   const comps = picked.comps || [];
   if (comps.length < opts.minComps) {
     return null;
@@ -887,31 +1417,28 @@ function scoreDeal(target, rows, opts) {
   ) {
     return null;
   }
-
-  const compAdjustedPsmRows = comps
-    .map((x) => ({
-      value: x._adjustedPricePerSqm,
-      weight: 0.12 + Math.pow(x._similarity, 2) * 1.9
-    }))
-    .filter((x) => Number.isFinite(x.value) && Number.isFinite(x.weight) && x.weight > 0);
-  if (compAdjustedPsmRows.length < opts.minComps) {
-    return null;
-  }
-
-  const compMedian = weightedMedian(compAdjustedPsmRows);
+  const compMedian = computeComparableMedianPsm(comps, opts.minComps);
   if (!Number.isFinite(compMedian) || compMedian <= 0) {
     return null;
   }
+  const modelPredictedPsm = opts.model ? predictPsm(opts.model, target) : null;
+  const blendedFair = blendFairPsm(compMedian, modelPredictedPsm, comps.length);
+  const fairPsm = blendedFair.fairPsm;
+  if (!Number.isFinite(fairPsm) || fairPsm <= 0) {
+    return null;
+  }
 
-  const compPsmForDispersion = compAdjustedPsmRows.map((x) => x.value);
+  const compPsmForDispersion = comps
+    .map((x) => x._adjustedPricePerSqm)
+    .filter((x) => Number.isFinite(x) && x > 0);
   const dispersionMad = medianAbsDeviation(compPsmForDispersion, compMedian);
   const dispersionRatio = dispersionMad == null ? 1 : clamp(dispersionMad / compMedian, 0, 1);
   const avgSimilarity =
     comps.reduce((sum, row) => sum + (Number.isFinite(row._similarity) ? row._similarity : 0), 0) / Math.max(1, comps.length);
 
-  let fairPrice = compMedian * target._effectiveSqm;
+  let fairPrice = fairPsm * target._effectiveSqm;
   if (Number.isFinite(target.avgPriceForSale) && target.avgPriceForSale > 0) {
-    fairPrice = fairPrice * 0.7 + target.avgPriceForSale * 0.3;
+    fairPrice = fairPrice * 0.82 + target.avgPriceForSale * 0.18;
   }
 
   if (!Number.isFinite(fairPrice) || fairPrice <= 0) {
@@ -927,7 +1454,7 @@ function scoreDeal(target, rows, opts) {
   const livabilityQuality = clamp(target._qualityScore, 0, 1);
   const qualityMultiplier = 0.78 + livabilityQuality * 0.44;
   let score = discountPct * confidence * qualityMultiplier;
-  const pricePerSqmGapPct = (compMedian - target._pricePerSqm) / compMedian;
+  const pricePerSqmGapPct = (fairPsm - target._pricePerSqm) / fairPsm;
 
   let endeksaMidPrice = null;
   if (Number.isFinite(target.endeksaMinPrice) && Number.isFinite(target.endeksaMaxPrice)) {
@@ -954,6 +1481,7 @@ function scoreDeal(target, rows, opts) {
       )
   );
   const topComparableRows = [...sameNeighborhoodComparables, ...fallbackComparables].slice(0, 3);
+  const outsideNeighborhoodComparableCount = Math.max(0, comps.length - sameNeighborhoodComparables.length);
   const topComparables = topComparableRows.map((row) => ({
     source: row.source,
     listingKey: row.listingKey,
@@ -998,7 +1526,7 @@ function scoreDeal(target, rows, opts) {
     effectiveSqm: target._effectiveSqm,
     pricePerSqm: target._pricePerSqm,
     fairPriceEstimate: fairPrice,
-    fairPricePerSqm: compMedian,
+    fairPricePerSqm: fairPsm,
     discountPct,
     discountAmountTl: fairPrice - target.priceTl,
     confidence,
@@ -1020,8 +1548,10 @@ function scoreDeal(target, rows, opts) {
       comparableCount: comps.length,
       minSameNeighborhoodComps: opts.minSameNeighborhoodComps,
       strictSameNeighborhoodApplied: Boolean(opts.strictSameNeighborhood),
+      strictNeighborhoodGate: Boolean(picked.strictNeighborhoodGate),
       neighborhoodFocused: Boolean(picked.neighborhoodFocused),
       sameNeighborhoodComparableCount: picked.sameNeighborhoodComparableCount || 0,
+      outsideNeighborhoodComparableCount,
       effectiveSqm: target._effectiveSqm,
       usedSqmType: Number.isFinite(target.netSqm) && target.netSqm > 0 ? "net" : "gross",
       roomCount: target.roomCount || null,
@@ -1047,6 +1577,9 @@ function scoreDeal(target, rows, opts) {
       usageScore: target._usageScore,
       livabilityQuality,
       listingPricePerSqm: target._pricePerSqm,
+      modelPredictedPricePerSqm: modelPredictedPsm,
+      fairPricePerSqm: fairPsm,
+      fairPriceCompWeight: blendedFair.compWeight,
       comparableMedianPricePerSqm: compMedian,
       pricePerSqmGapPct,
       fairPriceEstimate: fairPrice,
@@ -1080,6 +1613,8 @@ export async function onRequestGet(context) {
   const minComps = Math.max(3, Math.min(50, toInt(url.searchParams.get("min_comps"), 6)));
   const strictSameNeighborhood = toBool(url.searchParams.get("strict_same_neighborhood"), true);
   const minSameNeighborhoodComps = Math.max(1, Math.min(20, toInt(url.searchParams.get("min_same_neighborhood_comps"), 3)));
+  const useModel = toBool(url.searchParams.get("use_model"), true);
+  const modelLambda = clamp(toFloat(url.searchParams.get("model_lambda"), 8), 0.01, 1000);
 
   const rowsRes = await DB.prepare(
     `
@@ -1127,13 +1662,15 @@ export async function onRequestGet(context) {
   const valid = pre.filter((x) => Number.isFinite(x._pricePerSqm));
   const universe = buildScoringUniverse(valid);
   const scoringRows = universe.rows;
+  const model = useModel ? trainRidgeModel(scoringRows, { lambda: modelLambda }) : null;
 
   const scored = [];
   for (const listing of scoringRows) {
     const deal = scoreDeal(listing, scoringRows, {
       minComps,
       strictSameNeighborhood,
-      minSameNeighborhoodComps
+      minSameNeighborhoodComps,
+      model
     });
     if (!deal) {
       continue;
@@ -1153,11 +1690,12 @@ export async function onRequestGet(context) {
     ok: true,
     area: { city: areaCity, district: areaDistrict },
     model: {
-      version: "v3-legal-usage-signals",
+      version: "v4-hybrid-ml",
       factors: [
         "m2 benzerliği",
         "oda benzerliği",
         "mahalle benzerliği",
+        "makine öğrenmesi fiyat tahmini",
         "bina yaşı",
         "kat tercihi",
         "tapu durumu",
@@ -1177,7 +1715,9 @@ export async function onRequestGet(context) {
       minConfidence,
       minComps,
       strictSameNeighborhood,
-      minSameNeighborhoodComps
+      minSameNeighborhoodComps,
+      useModel,
+      modelLambda
     },
     totals: {
       activeListings: rows.length,
@@ -1186,8 +1726,17 @@ export async function onRequestGet(context) {
       listingsAfterDedup: scoringRows.length,
       filteredOutliers: universe.filteredOut,
       dedupedListings: universe.dedupedOut,
+      modelTrainingRows: model?.trainRows ?? 0,
+      modelTrainMape: model?.trainMAPE ?? null,
       dealsMatched: scored.length
     },
     deals: scored.slice(0, limit)
   });
 }
+
+export {
+  withPrecomputed,
+  canonicalAreaName,
+  toInt,
+  toBool
+};
